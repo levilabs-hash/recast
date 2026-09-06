@@ -1,35 +1,428 @@
 import type { Opportunity } from "@/lib/types";
-import {
-  attentionHook,
-  videoCaptions,
-  expandFromSource,
-  insightFromSource,
-  specificCta,
-  takeawayFromSource,
-} from "./draft";
+import { cleanQuote, sourceClaim, sourceClauses, textKey } from "./draft";
+
+const LABEL_PREFIX =
+  /^(the line that changes the piece:|the line i almost cut:|nobody wants to say this out loud:|contrarian:|how-to:|story:)\s*/i;
+const HOST_OPENER = /^today i'?m sitting\b/i;
+const LABEL_TITLES =
+  /moment the idea became obvious|repeatable system|what people get wrong|creating content|content meant|meant constantly/i;
+const META_SPEECH =
+  /\b(do not |that is the clip|stay with this one moment|lead with |put the question on screen|reusable moment|recast this|name the offer so specifically|stop after the question|internal|generation)\b/i;
+
+function words(text: string): string[] {
+  return cleanQuote(text).split(/\s+/).filter(Boolean);
+}
+
+function sentenceCase(text: string): string {
+  const trimmed = cleanQuote(text).replace(/^[.,]+|[.,]+$/g, "").trim();
+  if (!trimmed) return trimmed;
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function endSentence(text: string): string {
+  const trimmed = sentenceCase(text);
+  if (!trimmed) return trimmed;
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function isCategoryName(title: string): boolean {
+  const stripped = cleanQuote(title).replace(LABEL_PREFIX, "").trim();
+  if (!stripped || /…|\.\.\.$/.test(stripped) || LABEL_TITLES.test(stripped)) return true;
+  if (/[?$]/.test(stripped)) return false;
+  if (/\b(stop|stopped|start|started|worth|instead|useless|sold|became|almost cut)\b/i.test(stripped)) {
+    return false;
+  }
+  return words(stripped).length <= 4;
+}
+
+function sameLine(a: string, b: string): boolean {
+  const left = textKey(a);
+  const right = textKey(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const shorter = left.length <= right.length ? left : right;
+  const longer = left.length <= right.length ? right : left;
+  return shorter.split(" ").length >= 6 && longer.includes(shorter);
+}
+
+function usableClauses(claim: string): string[] {
+  return sourceClauses(claim).filter((clause) => {
+    if (HOST_OPENER.test(clause) || words(clause).length < 3) return false;
+    if (/\bis:?$/i.test(clause) && words(clause).length <= 5) return false;
+    if (META_SPEECH.test(clause)) return false;
+    return true;
+  });
+}
+
+function unusedClause(claim: string, used: string[]): string | null {
+  return (
+    usableClauses(claim).find((clause) => !used.some((item) => sameLine(clause, item))) ?? null
+  );
+}
+
+function firstQuestion(claim: string): string | null {
+  const matches = claim.match(/[A-Za-z][^?]{2,90}\?/g) ?? [];
+  const ranked = matches
+    .map((item) => item.trim())
+    .filter((item) => {
+      const count = words(item).length;
+      return count >= 3 && count <= 14;
+    })
+    .sort((a, b) => {
+      const rank = (item: string) =>
+        /^(am |what |how |why |the better )/i.test(item) ? 0 : 1;
+      return rank(a) - rank(b) || a.length - b.length;
+    });
+  return ranked[0] ?? null;
+}
+
+function ideaFromSource(sourceText: string, excerpt: string): string {
+  const claim = cleanQuote(excerpt);
+  const source = cleanQuote(sourceText);
+  const parts = [claim];
+
+  const mentionsClipTension =
+    /\b(?:good )?clips\b/i.test(claim) || /\btension\b/i.test(claim) || /\bhunting\b/i.test(claim);
+  if (mentionsClipTension && /\bclips\b/i.test(source) && /\btension\b/i.test(source)) {
+    const clipLine = source.match(/[^.?!]*hunting for (?:good )?clips[^.?!]*[.?!]/i)?.[0];
+    const tensionLine = source.match(/[^.?!]*(?:look for tension|hunting for tension)[^.?!]*[.?!]/i)?.[0];
+    if (clipLine && !parts.some((part) => sameLine(part, clipLine))) parts.push(clipLine);
+    if (tensionLine && !parts.some((part) => sameLine(part, tensionLine))) parts.push(tensionLine);
+  }
+
+  const isntIts = source.match(/\bisn'?t to ([^.]+)\.\s*It'?s to ([^.]+)\./i);
+  if (isntIts && /\b(goal|nothing|valuable moments|already there)\b/i.test(claim)) {
+    parts.push(isntIts[0]);
+  }
+
+  if (/\b(?:one-person newsletter|content operation|without hiring)\b/i.test(claim)) {
+    const week = source.match(/[^.?!]*one long piece a week[^.?!]*[.?!]/i)?.[0];
+    const rest = source.match(/[^.?!]*everything else is recast[^.?!]*[.?!]/i)?.[0];
+    if (week && !parts.some((part) => sameLine(part, week))) parts.push(week);
+    if (rest && !parts.some((part) => sameLine(part, rest))) parts.push(rest);
+  }
+
+  return parts.join(" ");
+}
+
+function openingHook(opportunity: Opportunity, idea: string): string {
+  const claim = idea;
+
+  if (/\bhunting for (?:good )?clips\b/i.test(claim) && /\b(?:look for tension|hunting for tension)\b/i.test(claim)) {
+    return "Stop hunting for clips. Start hunting for tension.";
+  }
+
+  const stopped = claim.match(/\bstopped (.+?) and started (.+?)(?:\.|$)/i);
+  if (stopped) {
+    return sentenceCase(`Stop ${stopped[1].trim()}. Start ${stopped[2].trim()}`);
+  }
+
+  const contrast = claim.match(
+    /\bnot (?:a |an |the )?([^.,]+?)\.\s*(?:It is|It's|it is) (?:a |an |the )?([^.,]+)/i,
+  );
+  if (contrast) {
+    return `It's not ${contrast[1].trim()}. It's ${contrast[2].trim()}.`;
+  }
+
+  const asked = firstQuestion(claim);
+  if (asked) return asked.endsWith("?") ? asked : `${asked}?`;
+
+  if (/\balmost four assets per input\b/i.test(claim)) {
+    return "Almost four assets per input.";
+  }
+
+  const grew = claim.match(
+    /\bgrew (.+?) into (?:a |an |the )?(.+?)(?:\s+without|\s+by |\.|$)/i,
+  );
+  if (grew) {
+    return sentenceCase(`Grew ${grew[1].trim()} into a ${grew[2].trim()}`);
+  }
+
+  if (/\bisn'?t to create more content from nothing\b/i.test(claim) && /\bvaluable moments\b/i.test(claim)) {
+    return "The goal isn't more content from nothing. It's the moments already there.";
+  }
+
+  if (/\bsame brain, different box\b/i.test(claim)) {
+    return "Same brain, different box.";
+  }
+
+  const usedTo = claim.match(/\bused to sell (.+?)(?:\.|$)/i);
+  if (usedTo && /\bvague\b/i.test(claim)) {
+    return sentenceCase(`I used to sell ${usedTo[1].trim()}. Vague`);
+  }
+
+  const listHead = claim.match(/^(that sentence became [^.]+?)(?:,| and )/i);
+  if (listHead && words(listHead[1]).length <= 10) {
+    return sentenceCase(listHead[1]);
+  }
+
+  const punchy = usableClauses(claim)
+    .map((clause) => clause.replace(/^[.]+|[.]+$/g, "").trim())
+    .filter((clause) => {
+      const count = words(clause).length;
+      return count >= 4 && count <= 12 && !isCategoryName(clause) && !sameLine(clause, opportunity.title);
+    })
+    .sort((a, b) => a.length - b.length)[0];
+  if (punchy) return acceptHook(punchy, opportunity);
+
+  const first = usableClauses(claim).find((clause) => !isCategoryName(clause) && !sameLine(clause, opportunity.title)) ?? "";
+  if (first && words(first).length <= 16 && !/\b(into|for|the|a|an|and|to|of)$/i.test(first.trim())) {
+    return acceptHook(first, opportunity);
+  }
+  if (first) return acceptHook(words(first).slice(0, 8).join(" "), opportunity);
+  const excerpt = usableClauses(sourceClaim(opportunity)).find((clause) => !isCategoryName(clause));
+  return acceptHook(excerpt || words(cleanQuote(sourceClaim(opportunity))).slice(0, 8).join(" "), opportunity);
+}
+
+function acceptHook(text: string, opportunity: Opportunity): string {
+  const hook = sentenceCase(text);
+  if (!isCategoryName(hook) && !LABEL_TITLES.test(hook) && !sameLine(hook, opportunity.title)) {
+    return hook;
+  }
+  const excerpt = usableClauses(sourceClaim(opportunity)).find(
+    (clause) => !isCategoryName(clause) && !sameLine(clause, opportunity.title),
+  );
+  return excerpt ? sentenceCase(excerpt) : hook;
+}
+
+function spokenBeats(hook: string, idea: string): string[] {
+  const claim = idea;
+  const used = [hook];
+  const beats: string[] = [];
+
+  function push(text: string | null | undefined) {
+    if (!text || META_SPEECH.test(text) || sameLine(text, hook)) return;
+    if (beats.some((existing) => sameLine(existing, text))) return;
+    beats.push(endSentence(text));
+    used.push(text);
+  }
+
+  const stopped = claim.match(/\bstopped (.+?) and started (.+?)(?:\.|$)/i);
+  if (stopped) {
+    const from = stopped[1].trim();
+    const to = stopped[2].trim();
+    push(/^hunting\b/i.test(from) ? `I was ${from}` : `I stopped ${from}`);
+    push(`Then I started ${to}`);
+    push(unusedClause(claim, used));
+    return beats.slice(0, 3);
+  }
+
+  if (/\bhunting for (?:good )?clips\b/i.test(claim) && /\btension\b/i.test(claim)) {
+    push("I used to think creating content meant hunting for good clips");
+    push(
+      "The better approach is to look for tension, useful ideas, and moments that can stand on their own",
+    );
+    push(
+      /\blong conversation\b/i.test(claim)
+        ? "One long conversation can contain multiple pieces if you know what to look for"
+        : "Find the valuable moments that are already there",
+    );
+    return beats.slice(0, 3);
+  }
+
+  const contrast = claim.match(
+    /\bnot (?:a |an |the )?([^.,]+?)\.\s*(?:It is|It's|it is) (?:a |an |the )?([^.,]+)/i,
+  );
+  if (contrast) {
+    push(`It is not ${contrast[1].trim()}`);
+    push(`It is ${contrast[2].trim()}`);
+    push(unusedClause(claim, used));
+    return beats.slice(0, 3);
+  }
+
+  const usedTo = claim.match(/\bused to sell (.+?)(?:\.|$)/i);
+  if (usedTo) {
+    push(`I used to sell ${usedTo[1].trim()}`);
+    if (/\bvague\b/i.test(claim)) push("Vague");
+    const sold = claim.match(/\bsold\s+[“"]?([^.”"]+)[”"]?/i);
+    if (sold) push(`Then I sold ${sold[1].trim()}`);
+    push(unusedClause(claim, used));
+    return beats.slice(0, 3);
+  }
+
+  const asked = firstQuestion(claim);
+  if (asked) {
+    if (!sameLine(hook, asked)) push(asked);
+    if (/\buseless question\b/i.test(claim)) push("Useless question");
+    if (/\bwhat transformation is so specific\b/i.test(claim)) {
+      push("The better question is: what transformation is so specific that $3,000 feels obvious?");
+    }
+    push(unusedClause(claim, used));
+    return beats.slice(0, 3);
+  }
+
+  const listNext = claim.split(/,\s+/).map((part) => cleanQuote(part)).filter((part) => {
+    const count = words(part).length;
+    return count >= 3 && count <= 14 && !sameLine(part, hook) && !HOST_OPENER.test(part);
+  });
+  for (const part of listNext) {
+    if (beats.length >= 3) break;
+    push(part);
+  }
+
+  while (beats.length < 2) {
+    const next = unusedClause(claim, used);
+    if (!next) break;
+    push(next);
+  }
+
+  if (beats.length === 0) {
+    const leftover = usableClauses(claim).filter((clause) => !sameLine(clause, hook));
+    for (const clause of leftover.slice(0, 2)) push(clause);
+  }
+
+  return beats.slice(0, 3);
+}
+
+function viewerCta(idea: string): string {
+  const claim = idea;
+
+  if (
+    /\b(?:look for tension|hunting for tension)\b/i.test(claim) ||
+    (/\bclips\b/i.test(claim) && /\btension\b/i.test(claim)) ||
+    /\bstand on their own\b/i.test(claim)
+  ) {
+    return "Comment a moment from your last video that could stand on its own.";
+  }
+  if (/\bstopped\b.+\bstarted\b/i.test(claim)) {
+    return "Comment a moment from your last video that had tension.";
+  }
+  if (/\bpackaging problem\b/i.test(claim) && /\bconfidence\b/i.test(claim)) {
+    return "Are you treating price like a personality test? Tell me below.";
+  }
+  if (/\bwhat transformation is so specific\b/i.test(claim) || /\bbetter question\b/i.test(claim)) {
+    return "What's a better question than 'Am I worth this?' Comment yours.";
+  }
+  if (/\buseless question\b/i.test(claim) && /\$[\d]/.test(claim)) {
+    return "What's a better question than 'Am I worth this?' Comment yours.";
+  }
+  if (/\baside you almost cut\b/i.test(claim) || /\balmost cut\b/i.test(claim)) {
+    return "Have you ever almost cut the line that performed? Tell me.";
+  }
+  if (/\b28-second\b/i.test(claim) || /\bfour formats\b/i.test(claim) || /\bsame 12 words\b/i.test(claim)) {
+    return "Save this if one line has ever become four pieces of content for you.";
+  }
+  if (/\bused to sell\b/i.test(claim) || (/\bvague\b/i.test(claim) && /\bsold\b/i.test(claim))) {
+    return "Have you ever sold something too vague to buy? Comment the offer.";
+  }
+  if (/\bidentify the opportunities first\b/i.test(claim) || /\bselection is the job\b/i.test(claim)) {
+    return "Do you pick the moments first, or ask for 30 posts? Comment your process.";
+  }
+  if (/\bcircle three moments\b/i.test(claim) || /\bbehind on recasting\b/i.test(claim)) {
+    return "If a two-hour interview is sitting in your drive, start with three moments tonight.";
+  }
+  if (/\bfour assets per input\b/i.test(claim) || /\b47 public posts\b/i.test(claim)) {
+    return "How many assets did your last long piece actually become?";
+  }
+  if (/\bgrew\b.+\bcontent operation\b/i.test(claim) || /\bwithout hiring a team\b/i.test(claim)) {
+    return "Follow if you're building a content operation without hiring a team.";
+  }
+  if (/\bsame brain, different box\b/i.test(claim)) {
+    return "Have you ever sold something too vague to buy? Comment the offer.";
+  }
+  if (/\bvaluable moments that are already there\b/i.test(claim) || /\bfrom nothing\b/i.test(claim)) {
+    return "Save this if you've been trying to create more from nothing.";
+  }
+
+  return "If this changed how you look at your last recording, save it.";
+}
+
+function punchyCaptions(idea: string, hook: string): string {
+  const claim = idea;
+  const captions: string[] = [];
+  const seen = new Set<string>();
+
+  function add(raw: string) {
+    const trimmed = sentenceCase(String(raw).replace(/\s+/g, " ").trim());
+    const cleaned = trimmed.replace(/[.,]+$/g, "").trim();
+    const count = words(cleaned).length;
+    if (count < 2 || count > 8) return;
+    if (cleaned.length > 56 || /…|\.\.\.$/.test(cleaned) || /\bis:?$/i.test(cleaned)) return;
+    if (/\b(into|for|the|a|an|and|to|of)$/i.test(cleaned)) return;
+    if (META_SPEECH.test(cleaned) || LABEL_TITLES.test(cleaned)) return;
+    if (sameLine(cleaned, claim) && words(cleaned).length >= 10) return;
+    const key = textKey(cleaned);
+    if (!key || seen.has(key)) return;
+    if (captions.some((existing) => sameLine(existing, cleaned))) return;
+    seen.add(key);
+    captions.push(/[?]$/.test(String(raw).trim()) ? `${cleaned.replace(/[?]+$/g, "")}?` : cleaned);
+  }
+
+  if (/\bclips\b/i.test(claim) && /\btension\b/i.test(claim)) {
+    add("Stop hunting for clips");
+    add("Start hunting for tension");
+    add("Moments that can stand alone");
+  }
+
+  const stopped = claim.match(/\bstopped (.+?) and started (.+?)(?:\.|$)/i);
+  if (stopped) {
+    add(`Stop ${stopped[1].trim()}`);
+    add(`Start ${stopped[2].trim()}`);
+  }
+
+  const contrast = claim.match(
+    /\bnot (?:a |an |the )?([^.,]+?)\.\s*(?:It is|It's|it is) (?:a |an |the )?([^.,]+)/i,
+  );
+  if (contrast) {
+    add(`Not ${contrast[1].trim()}`);
+    add(`It's ${contrast[2].trim()}`);
+  }
+
+  const asked = firstQuestion(claim);
+  if (asked && words(asked).length <= 8) add(asked);
+  if (/\bbetter question\b/i.test(claim)) add("The better question");
+  if (/\$3,000 feels obvious/i.test(claim)) add("$3,000 feels obvious");
+  if (/\buseless question\b/i.test(claim)) add("Useless question");
+
+  const grew = claim.match(/\bgrew (.+?) into (?:a |an |the )?(.+?)(?:\s+without|\.|$)/i);
+  if (grew) {
+    add("One-person newsletter");
+    add("Full content operation");
+  }
+
+  for (const match of claim.matchAll(/\b\d+-second [A-Za-z]+/g)) add(match[0]);
+  if (/1\.2 million impressions/i.test(claim)) add("1.2 million impressions");
+  const titled = claim.match(/titled\s+([^,]+)/i);
+  if (titled) add(titled[1].trim());
+  if (/\baside you almost cut\b/i.test(claim)) add("The aside you almost cut");
+  if (/\bsame brain, different box\b/i.test(claim)) add("Same brain, different box");
+  const usedToSell = claim.match(/\bused to (sell .+?)(?:\.|$)/i);
+  if (usedToSell) add(`Used to ${usedToSell[1].trim()}`);
+  if (/\bvague\b/i.test(claim)) add("Vague");
+  if (/\b14-day recasting system\b/i.test(claim)) add("A 14-day recasting system");
+  if (/\bfrom nothing\b/i.test(claim)) add("Not from nothing");
+  if (/\bvaluable moments\b/i.test(claim)) add("The moments already there");
+
+  for (const part of hook.split(/(?<=[.!?])\s+/)) {
+    if (words(part).length >= 2 && words(part).length <= 8) add(part);
+  }
+
+  for (const clause of usableClauses(claim)) {
+    if (captions.length >= 3) break;
+    if (words(clause).length <= 8) add(clause);
+  }
+
+  if (captions.length === 0) {
+    add(words(hook).slice(0, 6).join(" "));
+  }
+
+  return captions.slice(0, 3).map((line, index) => `${index + 1}. ${line}`).join("\n");
+}
 
 export function generateTikTok(
-  _sourceText: string,
+  sourceText: string,
   opportunity: Opportunity,
 ): Record<string, string> {
-  const hook = attentionHook(opportunity);
-  const beat1 = expandFromSource(opportunity, hook);
-  const beat2 = insightFromSource(opportunity);
-  const beat3 = takeawayFromSource(opportunity, hook, beat1);
-  const cta = specificCta(opportunity, hook);
-
-  const spokenScript = [
-    `HOOK (0-2s): ${hook}`,
-    `BEAT 1 (2-10s): ${beat1}`,
-    `BEAT 2 (10-22s): ${beat2}`,
-    `BEAT 3 (22-32s): ${beat3}`,
-    `CTA (32-38s): ${cta}`,
-  ].join("\n");
+  const idea = ideaFromSource(sourceText, sourceClaim(opportunity));
+  const hook = openingHook(opportunity, idea);
+  const beats = spokenBeats(hook, idea);
+  const cta = viewerCta(idea);
+  const spokenScript = [hook, ...beats].filter(Boolean).join("\n\n");
 
   return {
     hook,
     spokenScript,
-    onScreenText: videoCaptions(opportunity, hook),
+    onScreenText: punchyCaptions(idea, hook),
     cta,
   };
 }

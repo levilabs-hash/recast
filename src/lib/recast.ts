@@ -4,8 +4,8 @@ import {
   generateWithOpenAI,
   isOpenAIConfigured,
 } from "./openai";
-import { normalizePlatforms, type PlatformId } from "./platforms";
-import type { AnalysisResult, GenerationResult, Opportunity } from "./types";
+import { generateForPlatform, normalizePlatforms, type PlatformId } from "./platforms";
+import type { AnalysisResult, GeneratedPiece, GenerationResult, Opportunity } from "./types";
 
 const MIN_CHARS = 80;
 const MAX_CHARS = 20000;
@@ -35,6 +35,62 @@ export async function analyzeContent(sourceText: string): Promise<AnalysisResult
   return analyzeLocally(sourceText);
 }
 
+function applyTikTokGenerator(
+  sourceText: string,
+  opportunities: Opportunity[],
+  result: GenerationResult,
+): GenerationResult {
+  if (!result.platforms.includes("tiktok")) {
+    return result;
+  }
+
+  const byId = new Map(opportunities.map((item) => [item.id, item]));
+  const outputs: GeneratedPiece[] = [];
+  const seenTikTok = new Set<string>();
+
+  for (const output of result.outputs) {
+    if (output.platform !== "tiktok") {
+      outputs.push(output);
+      continue;
+    }
+    const opportunity = byId.get(output.opportunityId);
+    if (!opportunity) {
+      outputs.push(output);
+      continue;
+    }
+    const fields = generateForPlatform("tiktok", sourceText, opportunity);
+    console.info("[recast:tiktok]", {
+      opportunityId: opportunity.id,
+      opportunityTitle: opportunity.title,
+      hook: fields.hook,
+      cta: fields.cta,
+      incomingHook: output.fields.hook,
+    });
+    outputs.push({ ...output, fields });
+    seenTikTok.add(opportunity.id);
+  }
+
+  for (const opportunity of opportunities) {
+    if (seenTikTok.has(opportunity.id)) continue;
+    const fields = generateForPlatform("tiktok", sourceText, opportunity);
+    console.info("[recast:tiktok:missing]", {
+      opportunityId: opportunity.id,
+      opportunityTitle: opportunity.title,
+      hook: fields.hook,
+      cta: fields.cta,
+    });
+    outputs.push({
+      opportunityId: opportunity.id,
+      opportunityTitle: opportunity.title,
+      opportunityKind: opportunity.kind,
+      platform: "tiktok",
+      fields,
+    });
+  }
+
+  return { ...result, outputs };
+}
+
 export async function generateContent(
   sourceText: string,
   opportunities: Opportunity[],
@@ -47,12 +103,17 @@ export async function generateContent(
     throw new Error("Select at least one platform to generate content.");
   }
 
+  let result: GenerationResult;
   if (isOpenAIConfigured()) {
     try {
-      return await generateWithOpenAI(sourceText, opportunities, platforms);
+      result = await generateWithOpenAI(sourceText, opportunities, platforms);
     } catch (error) {
       console.error("OpenAI generation failed, using local engine.", error);
+      result = generateLocally(sourceText, opportunities, platforms);
     }
+  } else {
+    result = generateLocally(sourceText, opportunities, platforms);
   }
-  return generateLocally(sourceText, opportunities, platforms);
+
+  return applyTikTokGenerator(sourceText, opportunities, result);
 }
