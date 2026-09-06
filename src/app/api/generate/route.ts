@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { normalizePlatforms } from "@/lib/platforms";
 import { generateContent, validateSourceText } from "@/lib/recast";
 import type { GenerateRequest, Opportunity, OpportunityKind } from "@/lib/types";
 
@@ -33,7 +34,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const result = await generateContent(sourceText, opportunities);
+    const platforms = normalizePlatforms(body.platforms);
+    const result = await generateContent(sourceText, opportunities, platforms);
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Generation failed.";

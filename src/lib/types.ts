@@ -1,3 +1,7 @@
+import type { PlatformId } from "./platforms/catalog";
+
+export type { PlatformId };
+
 export type OpportunityKind = "topic" | "moment" | "hook" | "angle";
 
 export type AnalysisEngine = "openai" | "local";
@@ -19,17 +23,13 @@ export interface GeneratedPiece {
   opportunityId: string;
   opportunityTitle: string;
   opportunityKind: OpportunityKind;
-  tiktokScript: string;
-  xPost: string;
-  instagramCaption: string;
-  youtubeShortsTitle: string;
-  hook: string;
-  cta: string;
-  hashtags: string[];
+  platform: PlatformId;
+  fields: Record<string, string>;
 }
 
 export interface GenerationResult {
   engine: AnalysisEngine;
+  platforms: PlatformId[];
   outputs: GeneratedPiece[];
 }
 
@@ -40,4 +40,5 @@ export interface AnalyzeRequest {
 export interface GenerateRequest {
   sourceText: string;
   opportunities: Opportunity[];
+  platforms?: PlatformId[];
 }

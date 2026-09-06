@@ -4,6 +4,7 @@ import {
   generateWithOpenAI,
   isOpenAIConfigured,
 } from "./openai";
+import { normalizePlatforms, type PlatformId } from "./platforms";
 import type { AnalysisResult, GenerationResult, Opportunity } from "./types";
 
 const MIN_CHARS = 80;
@@ -37,17 +38,21 @@ export async function analyzeContent(sourceText: string): Promise<AnalysisResult
 export async function generateContent(
   sourceText: string,
   opportunities: Opportunity[],
+  platforms: PlatformId[] = normalizePlatforms(undefined),
 ): Promise<GenerationResult> {
   if (opportunities.length === 0) {
     throw new Error("Select at least one opportunity to generate content.");
   }
+  if (platforms.length === 0) {
+    throw new Error("Select at least one platform to generate content.");
+  }
 
   if (isOpenAIConfigured()) {
     try {
-      return await generateWithOpenAI(sourceText, opportunities);
+      return await generateWithOpenAI(sourceText, opportunities, platforms);
     } catch (error) {
       console.error("OpenAI generation failed, using local engine.", error);
     }
   }
-  return generateLocally(sourceText, opportunities);
+  return generateLocally(sourceText, opportunities, platforms);
 }

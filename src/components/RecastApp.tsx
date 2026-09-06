@@ -3,6 +3,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { engineLabel, KIND_CLASS, KIND_LABEL } from "@/lib/labels";
+import { getPlatform, PLATFORMS, PLATFORM_IDS, type PlatformId } from "@/lib/platforms";
 import { SAMPLE_TRANSCRIPT } from "@/lib/sample";
 import type {
   AnalysisEngine,
@@ -22,30 +23,9 @@ const ANALYZE_STEPS = [
 ];
 
 const GENERATE_STEPS = [
-  "Drafting short-form scripts",
-  "Writing captions and posts",
-  "Building titles, CTAs, and tags",
-];
-
-const PLATFORM_SECTIONS: Array<{
-  key: keyof Pick<
-    GeneratedPiece,
-    | "tiktokScript"
-    | "xPost"
-    | "instagramCaption"
-    | "youtubeShortsTitle"
-    | "hook"
-    | "cta"
-  >;
-  title: string;
-  hint: string;
-}> = [
-  { key: "tiktokScript", title: "TikTok / Reels script", hint: "Spoken 25–40s structure" },
-  { key: "xPost", title: "X post", hint: "Punchy, publish-ready" },
-  { key: "instagramCaption", title: "Instagram caption", hint: "Line-broken with CTA" },
-  { key: "youtubeShortsTitle", title: "YouTube Shorts title", hint: "Under 70 characters" },
-  { key: "hook", title: "Hook", hint: "Opening line" },
-  { key: "cta", title: "CTA", hint: "What to do next" },
+  "Shaping the selected platform format",
+  "Writing from the source and opportunity",
+  "Keeping claims faithful to the original",
 ];
 
 export function RecastApp() {
@@ -59,6 +39,8 @@ export function RecastApp() {
   const [analysisEngine, setAnalysisEngine] = useState<AnalysisEngine>("local");
   const [generationEngine, setGenerationEngine] = useState<AnalysisEngine>("local");
   const [filterId, setFilterId] = useState<"all" | string>("all");
+  const [selectedPlatforms, setSelectedPlatforms] = useState<PlatformId[]>([...PLATFORM_IDS]);
+  const [generatedPlatforms, setGeneratedPlatforms] = useState<PlatformId[]>([]);
 
   const selected = useMemo(
     () => opportunities.filter((item) => selectedIds.includes(item.id)),
@@ -99,6 +81,7 @@ export function RecastApp() {
       setAnalysisEngine(payload.engine);
       setOutputs([]);
       setFilterId("all");
+      setGeneratedPlatforms([]);
       setStage("review");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed.");
@@ -112,16 +95,25 @@ export function RecastApp() {
       setError("Select at least one opportunity.");
       return;
     }
+    if (selectedPlatforms.length === 0) {
+      setError("Select at least one platform.");
+      return;
+    }
     setError(null);
     setBusy("generate");
     try {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceText, opportunities: selected }),
+        body: JSON.stringify({
+          sourceText,
+          opportunities: selected,
+          platforms: selectedPlatforms,
+        }),
       });
       const payload = (await response.json()) as {
         engine?: AnalysisEngine;
+        platforms?: PlatformId[];
         outputs?: GeneratedPiece[];
         error?: string;
       };
@@ -129,6 +121,7 @@ export function RecastApp() {
         throw new Error(payload.error ?? "Generation failed.");
       }
       setOutputs(payload.outputs ?? []);
+      setGeneratedPlatforms(payload.platforms ?? selectedPlatforms);
       setGenerationEngine(payload.engine ?? "local");
       setFilterId("all");
       setStage("results");
@@ -147,11 +140,14 @@ export function RecastApp() {
 
   function reset() {
     setStage("input");
+    setSourceText("");
     setError(null);
     setOpportunities([]);
     setSelectedIds([]);
     setOutputs([]);
     setFilterId("all");
+    setSelectedPlatforms([...PLATFORM_IDS]);
+    setGeneratedPlatforms([]);
   }
 
   return (
@@ -194,9 +190,15 @@ export function RecastApp() {
           <Review
             opportunities={opportunities}
             selectedIds={selectedIds}
+            selectedPlatforms={selectedPlatforms}
             counts={counts}
             busy={busy === "generate"}
             onToggle={toggle}
+            onTogglePlatform={(id) =>
+              setSelectedPlatforms((current) =>
+                current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+              )
+            }
             onSelectAll={() => setSelectedIds(opportunities.map((item) => item.id))}
             onClear={() => setSelectedIds([])}
             onGenerate={generate}
@@ -208,6 +210,7 @@ export function RecastApp() {
           <Dashboard
             opportunities={selected}
             outputs={visibleOutputs}
+            platforms={generatedPlatforms}
             filterId={filterId}
             onFilter={setFilterId}
             onBack={() => setStage("review")}
@@ -359,9 +362,11 @@ function Landing({
 function Review({
   opportunities,
   selectedIds,
+  selectedPlatforms,
   counts,
   busy,
   onToggle,
+  onTogglePlatform,
   onSelectAll,
   onClear,
   onGenerate,
@@ -369,9 +374,11 @@ function Review({
 }: {
   opportunities: Opportunity[];
   selectedIds: string[];
+  selectedPlatforms: PlatformId[];
   counts: Record<OpportunityKind, number>;
   busy: boolean;
   onToggle: (id: string) => void;
+  onTogglePlatform: (id: PlatformId) => void;
   onSelectAll: () => void;
   onClear: () => void;
   onGenerate: () => void;
@@ -383,8 +390,11 @@ function Review({
         <div>
           <h1 className="font-serif text-4xl text-cream">Content opportunities</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">
-            {opportunities.length} opportunities · {counts.topic} topics · {counts.moment} moments ·{" "}
-            {counts.hook} hooks · {counts.angle} angles. Select what deserves oxygen, then generate.
+            {opportunities.length} opportunities · {counts.topic}{" "}
+            {counts.topic === 1 ? "topic" : "topics"} · {counts.moment}{" "}
+            {counts.moment === 1 ? "moment" : "moments"} · {counts.hook}{" "}
+            {counts.hook === 1 ? "hook" : "hooks"} · {counts.angle}{" "}
+            {counts.angle === 1 ? "angle" : "angles"}. Select what deserves oxygen, then generate.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -400,11 +410,26 @@ function Review({
           <button
             type="button"
             onClick={onGenerate}
-            disabled={busy || selectedIds.length === 0}
+            disabled={busy || selectedIds.length === 0 || selectedPlatforms.length === 0}
             className="rounded-full bg-gold px-5 py-2 text-sm font-semibold text-ink hover:bg-gold-soft disabled:opacity-50"
           >
             Generate {selectedIds.length} selected
           </button>
+        </div>
+      </div>
+
+      <div className="mb-6">
+        <p className="mb-3 text-xs tracking-[0.2em] uppercase text-muted">Generate for</p>
+        <div className="flex flex-wrap gap-2">
+          {PLATFORMS.map((platform) => (
+            <FilterChip
+              key={platform.id}
+              active={selectedPlatforms.includes(platform.id)}
+              onClick={() => onTogglePlatform(platform.id)}
+            >
+              {platform.label}
+            </FilterChip>
+          ))}
         </div>
       </div>
 
@@ -445,6 +470,7 @@ function Review({
 function Dashboard({
   opportunities,
   outputs,
+  platforms,
   filterId,
   onFilter,
   onBack,
@@ -452,6 +478,7 @@ function Dashboard({
 }: {
   opportunities: Opportunity[];
   outputs: GeneratedPiece[];
+  platforms: PlatformId[];
   filterId: "all" | string;
   onFilter: (id: "all" | string) => void;
   onBack: () => void;
@@ -463,7 +490,8 @@ function Dashboard({
         <div>
           <h1 className="font-serif text-4xl text-cream">Results dashboard</h1>
           <p className="mt-2 text-sm text-muted">
-            Copy any output. Filter by opportunity to keep the operation organized.
+            Copy any output. Filter by opportunity. Generated for{" "}
+            {platforms.map((id) => getPlatform(id).label).join(", ") || "the selected platforms"}.
           </p>
         </div>
         <div className="flex gap-2">
@@ -478,7 +506,7 @@ function Dashboard({
 
       <div>
         <h2 className="mb-4 text-xs tracking-[0.2em] uppercase text-muted">Opportunities</h2>
-        <div className="flex gap-3 overflow-x-auto pb-2">
+        <div className="flex flex-nowrap gap-3 overflow-x-auto pb-2">
           <FilterChip active={filterId === "all"} onClick={() => onFilter("all")}>
             All
           </FilterChip>
@@ -507,28 +535,36 @@ function Dashboard({
         </div>
       </div>
 
-      {PLATFORM_SECTIONS.map((section) => (
-        <PlatformSection
-          key={section.key}
-          title={section.title}
-          hint={section.hint}
-          items={outputs.map((output) => ({
-            id: `${output.opportunityId}-${section.key}`,
-            eyebrow: output.opportunityTitle,
-            body: output[section.key],
-          }))}
-        />
-      ))}
-
-      <PlatformSection
-        title="Suggested hashtags"
-        hint="Copy a set or a single line"
-        items={outputs.map((output) => ({
-          id: `${output.opportunityId}-tags`,
-          eyebrow: output.opportunityTitle,
-          body: output.hashtags.join(" "),
-        }))}
-      />
+      {platforms.map((platformId) => {
+        const platform = getPlatform(platformId);
+        const platformOutputs = outputs.filter((output) => output.platform === platformId);
+        return (
+          <div key={platformId} className="space-y-8">
+            <div>
+              <h2 className="text-xs tracking-[0.2em] uppercase text-muted">{platform.label}</h2>
+              <p className="mt-1 text-xs text-muted">{platform.hint}</p>
+            </div>
+            {platform.fields.map((field) => {
+              const items = platformOutputs
+                .map((output) => ({
+                  id: `${output.opportunityId}-${platformId}-${field.key}`,
+                  eyebrow: output.opportunityTitle,
+                  body: output.fields[field.key] ?? "",
+                }))
+                .filter((item) => item.body.trim().length > 0);
+              if (items.length === 0) return null;
+              return (
+                <PlatformSection
+                  key={`${platformId}-${field.key}`}
+                  title={field.label}
+                  hint={field.hint}
+                  items={items}
+                />
+              );
+            })}
+          </div>
+        );
+      })}
     </section>
   );
 }
@@ -540,13 +576,13 @@ function FilterChip({
 }: {
   active: boolean;
   onClick: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`max-w-[240px] truncate rounded-full px-4 py-2 text-left text-xs ${
+      className={`shrink-0 max-w-[260px] truncate rounded-full px-4 py-2 text-left text-xs ${
         active ? "bg-gold text-ink" : "border border-line text-muted hover:text-cream"
       }`}
     >

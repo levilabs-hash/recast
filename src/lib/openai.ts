@@ -1,3 +1,4 @@
+import { getPlatform, isPlatformId, type PlatformId } from "./platforms";
 import type {
   AnalysisResult,
   GeneratedPiece,
@@ -125,23 +126,25 @@ export async function analyzeWithOpenAI(sourceText: string): Promise<AnalysisRes
   return { engine: "openai", opportunities };
 }
 
-function asGeneratedPiece(value: unknown, fallback: Opportunity): GeneratedPiece | null {
+function asGeneratedPiece(
+  value: unknown,
+  fallback: Opportunity,
+  platform: PlatformId,
+): GeneratedPiece | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const required = [
-    "tiktokScript",
-    "xPost",
-    "instagramCaption",
-    "youtubeShortsTitle",
-    "hook",
-    "cta",
-  ] as const;
-  for (const key of required) {
-    if (typeof record[key] !== "string" || !record[key].trim()) return null;
+  const rawFields =
+    record.fields && typeof record.fields === "object"
+      ? (record.fields as Record<string, unknown>)
+      : record;
+  const definition = getPlatform(platform);
+  const fields: Record<string, string> = {};
+  for (const field of definition.fields) {
+    const raw = rawFields[field.key];
+    const text = typeof raw === "string" ? raw.trim() : Array.isArray(raw) ? raw.join(" ") : "";
+    if (!field.optional && !text) return null;
+    if (text) fields[field.key] = text;
   }
-  const hashtags = Array.isArray(record.hashtags)
-    ? record.hashtags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
-    : [];
 
   return {
     opportunityId:
@@ -153,36 +156,43 @@ function asGeneratedPiece(value: unknown, fallback: Opportunity): GeneratedPiece
         ? record.opportunityTitle
         : fallback.title,
     opportunityKind: fallback.kind,
-    tiktokScript: String(record.tiktokScript).trim(),
-    xPost: String(record.xPost).trim(),
-    instagramCaption: String(record.instagramCaption).trim(),
-    youtubeShortsTitle: String(record.youtubeShortsTitle).trim(),
-    hook: String(record.hook).trim(),
-    cta: String(record.cta).trim(),
-    hashtags,
+    platform,
+    fields,
   };
 }
 
 export async function generateWithOpenAI(
   sourceText: string,
   opportunities: Opportunity[],
+  platforms: PlatformId[],
 ): Promise<GenerationResult> {
+  const fieldGuide = platforms
+    .map((id) => {
+      const platform = getPlatform(id);
+      const keys = platform.fields
+        .map((field) => `${field.key}${field.optional ? " (optional)" : ""}`)
+        .join(", ");
+      return `- ${platform.label} (${id}): ${keys}. ${platform.hint}`;
+    })
+    .join("\n");
+
   const data = await completeJson(
     [
       "You are RECAST, generating platform-specific content from selected opportunities.",
       "Return JSON only with this shape:",
-      '{ "outputs": [{ "opportunityId": "", "opportunityTitle": "", "tiktokScript": "", "xPost": "", "instagramCaption": "", "youtubeShortsTitle": "", "hook": "", "cta": "", "hashtags": [""] }] }',
+      '{ "outputs": [{ "opportunityId": "", "opportunityTitle": "", "platform": "tiktok|x|linkedin|instagram|youtube", "fields": { "fieldKey": "text" } }] }',
       "Rules:",
-      "- Produce one output object per opportunity, using the given opportunityId.",
-      "- Stay faithful to the source. Do not invent facts, results, or quotes.",
-      "- TikTok/Reels script: spoken lines with rough timing, 25-40 seconds.",
-      "- X post: punchy, preferably under 280 characters.",
-      "- Instagram caption: line-broken, readable, with a CTA.",
-      "- YouTube Shorts title: under 70 characters, specific, not clickbait-empty.",
-      "- Hashtags: 5-8, mixed specific and discoverable. No banned or spam tags.",
+      "- Produce one output object per opportunity per selected platform.",
+      "- Use only the selected platforms.",
+      "- Stay faithful to the source and the selected opportunity. Do not invent facts, statistics, experiences, or quotes.",
+      "- Leave optional fields empty when the source does not support them.",
+      "Selected platform fields:",
+      fieldGuide,
     ].join("\n"),
     [
       `Source content:\n${sourceText}`,
+      "",
+      `Selected platforms: ${platforms.join(", ")}`,
       "",
       `Selected opportunities:\n${JSON.stringify(opportunities, null, 2)}`,
     ].join("\n"),
@@ -190,22 +200,20 @@ export async function generateWithOpenAI(
 
   const record = data as { outputs?: unknown };
   const list = Array.isArray(record.outputs) ? record.outputs : [];
-  const outputs = opportunities
-    .map((opportunity, index) => {
-      const match =
-        list.find(
-          (item) =>
-            item &&
-            typeof item === "object" &&
-            (item as { opportunityId?: string }).opportunityId === opportunity.id,
-        ) ?? list[index];
-      return asGeneratedPiece(match, opportunity);
-    })
-    .filter((item): item is GeneratedPiece => item !== null);
+  const outputs = opportunities.flatMap((opportunity) =>
+    platforms.map((platform) => {
+      const match = list.find((item) => {
+        if (!item || typeof item !== "object") return false;
+        const row = item as { opportunityId?: string; platform?: string };
+        return row.opportunityId === opportunity.id && isPlatformId(row.platform) && row.platform === platform;
+      });
+      return asGeneratedPiece(match, opportunity, platform);
+    }),
+  ).filter((item): item is GeneratedPiece => item !== null);
 
   if (outputs.length === 0) {
     throw new Error("OpenAI generation returned no usable outputs.");
   }
 
-  return { engine: "openai", outputs };
+  return { engine: "openai", platforms, outputs };
 }
