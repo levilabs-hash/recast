@@ -27,12 +27,51 @@ function endSentence(text: string): string {
 
 function isCategoryName(title: string): boolean {
   const stripped = cleanQuote(title).replace(LABEL_PREFIX, "").trim();
-  if (!stripped || /…|\.\.\.$/.test(stripped) || LABEL_TITLES.test(stripped)) return true;
+  if (!stripped || /…|\.\.\.$/.test(stripped)) return true;
+  const count = words(stripped).length;
+  if (count <= 6 && LABEL_TITLES.test(stripped)) return true;
   if (/[?$]/.test(stripped)) return false;
   if (/\b(stop|stopped|start|started|worth|instead|useless|sold|became|almost cut)\b/i.test(stripped)) {
     return false;
   }
-  return words(stripped).length <= 4;
+  return count <= 4;
+}
+
+function sourceSentences(sourceText: string): string[] {
+  return cleanQuote(sourceText)
+    .replace(/^[A-Za-z]+:\s*/gm, "")
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 12 && words(sentence).length >= 4);
+}
+
+function sharesIdea(sentence: string, idea: string): boolean {
+  const left = new Set(textKey(sentence).split(" ").filter((word) => word.length > 3));
+  const right = textKey(idea).split(" ").filter((word) => word.length > 3);
+  if (left.size === 0 || right.length === 0) return false;
+  return right.filter((word) => left.has(word)).length >= 2;
+}
+
+function completeFromSource(sourceText: string, excerpt: string): string[] {
+  const sentences = sourceSentences(sourceText);
+  const excerptClean = cleanQuote(excerpt).replace(/[….]{2,}$/g, "").trim();
+  if (sentences.length === 0) return excerptClean ? [excerptClean] : [];
+
+  const lead = sourceSentences(excerptClean)[0] ?? excerptClean;
+  const prefix = textKey(lead).split(" ").filter(Boolean).slice(0, 6).join(" ");
+  let index = sentences.findIndex((sentence) => {
+    const key = textKey(sentence);
+    return (prefix && (key.includes(prefix) || prefix.includes(key))) || sameLine(sentence, lead);
+  });
+  if (index < 0) {
+    const needles = textKey(excerptClean).split(" ").filter((word) => word.length > 3);
+    index = sentences.findIndex((sentence) => {
+      const key = textKey(sentence);
+      return needles.filter((word) => key.includes(word)).length >= Math.min(4, needles.length);
+    });
+  }
+  if (index < 0) return excerptClean ? [excerptClean] : [];
+  return sentences.slice(index, index + 3);
 }
 
 function sameLine(a: string, b: string): boolean {
@@ -79,7 +118,8 @@ function firstQuestion(claim: string): string | null {
 function ideaFromSource(sourceText: string, excerpt: string): string {
   const claim = cleanQuote(excerpt);
   const source = cleanQuote(sourceText);
-  const parts = [claim];
+  const parts = completeFromSource(sourceText, excerpt);
+  if (!parts.some((part) => sameLine(part, claim)) && claim) parts.unshift(claim);
 
   const mentionsClipTension =
     /\b(?:good )?clips\b/i.test(claim) || /\btension\b/i.test(claim) || /\bhunting\b/i.test(claim);
@@ -185,7 +225,7 @@ function acceptHook(text: string, opportunity: Opportunity): string {
   return excerpt ? sentenceCase(excerpt) : hook;
 }
 
-function spokenBeats(hook: string, idea: string): string[] {
+function spokenBeats(hook: string, idea: string, sourceText: string): string[] {
   const claim = idea;
   const used = [hook];
   const beats: string[] = [];
@@ -271,7 +311,42 @@ function spokenBeats(hook: string, idea: string): string[] {
     for (const clause of leftover.slice(0, 2)) push(clause);
   }
 
+  for (const sentence of completeFromSource(sourceText, claim)) {
+    if (beats.length >= 3) break;
+    push(sentence);
+  }
+
   return beats.slice(0, 3);
+}
+
+function passageAround(sourceText: string, idea: string): string[] {
+  const sentences = sourceSentences(sourceText);
+  const seed = completeFromSource(sourceText, idea);
+  if (seed.length === 0) return sentences.slice(0, 4);
+  const start = sentences.findIndex((sentence) => sameLine(sentence, seed[0]));
+  if (start < 0) return seed;
+  return sentences.slice(start, start + 7);
+}
+
+function buildSpokenScript(hook: string, beats: string[], idea: string, sourceText: string): string {
+  const body = beats.filter((beat) => beat && !sameLine(beat, hook));
+
+  for (const sentence of passageAround(sourceText, idea)) {
+    if (body.length >= 4 && words([hook, ...body].join(" ")).length >= 60) break;
+    if (sameLine(sentence, hook) || body.some((existing) => sameLine(existing, sentence))) continue;
+    if (META_SPEECH.test(sentence) || HOST_OPENER.test(sentence)) continue;
+    body.push(endSentence(sentence));
+  }
+
+  if (body.length === 0) {
+    for (const sentence of completeFromSource(sourceText, idea)) {
+      if (sameLine(sentence, hook) || META_SPEECH.test(sentence)) continue;
+      body.push(endSentence(sentence));
+      if (body.length >= 2) break;
+    }
+  }
+
+  return [hook, ...body].join("\n\n");
 }
 
 function viewerCta(idea: string): string {
@@ -415,9 +490,9 @@ export function generateTikTok(
 ): Record<string, string> {
   const idea = ideaFromSource(sourceText, sourceClaim(opportunity));
   const hook = openingHook(opportunity, idea);
-  const beats = spokenBeats(hook, idea);
+  const beats = spokenBeats(hook, idea, sourceText);
   const cta = viewerCta(idea);
-  const spokenScript = [hook, ...beats].filter(Boolean).join("\n\n");
+  const spokenScript = buildSpokenScript(hook, beats, idea, sourceText);
 
   return {
     hook,
