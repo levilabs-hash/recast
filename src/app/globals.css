@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+:root {
+  --background: #090a0c;
+  --foreground: #f4efe4;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-ink: #090a0c;
+  --color-panel: #12141a;
+  --color-raised: #191c24;
+  --color-line: #2b303b;
+  --color-cream: #f4efe4;
+  --color-muted: #9a9386;
+  --color-gold: #d4a053;
+  --color-gold-soft: #e8c07a;
+  --color-topic: #7eb8d4;
+  --color-moment: #d4a053;
+  --color-hook: #e07a5f;
+  --color-angle: #81b29a;
+  --font-sans: var(--font-geist-sans);
+  --font-serif: var(--font-instrument);
+  --font-mono: var(--font-geist-mono);
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(244, 239, 228, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(244, 239, 228, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.badge-topic {
+  color: var(--color-topic);
+  background: color-mix(in srgb, var(--color-topic) 12%, transparent);
+}
+
+.badge-moment {
+  color: var(--color-moment);
+  background: color-mix(in srgb, var(--color-moment) 12%, transparent);
+}
+
+.badge-hook {
+  color: var(--color-hook);
+  background: color-mix(in srgb, var(--color-hook) 12%, transparent);
+}
+
+.badge-angle {
+  color: var(--color-angle);
+  background: color-mix(in srgb, var(--color-angle) 12%, transparent);
+}
