@@ -456,8 +456,8 @@ function punchyCaptions(idea: string, hook: string): string {
   const seen = new Set<string>();
 
   function add(raw: string) {
-    const trimmed = sentenceCase(String(raw).replace(/\s+/g, " ").trim());
-    const cleaned = trimmed.replace(/[.,]+$/g, "").trim();
+    const trimmed = String(raw).replace(/\s+/g, " ").trim();
+    const cleaned = (trimmed.charAt(0).toUpperCase() + trimmed.slice(1)).replace(/[.,]+$/g, "").trim();
     const count = words(cleaned).length;
     if (count < 2 || count > 10) return;
     if (!isCompletePhrase(cleaned) || /\bis:?$/i.test(cleaned)) return;
