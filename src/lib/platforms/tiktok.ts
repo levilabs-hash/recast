@@ -259,7 +259,7 @@ function openingHook(opportunity: Opportunity, idea: string): string {
   const anyComplete = usableClauses(claim).find(
     (clause) => !isCategoryName(clause) && isCompletePhrase(clause),
   );
-  return acceptHook(excerpt || anyComplete || first);
+  return acceptHook(excerpt || anyComplete || first, opportunity);
 }
 
 function acceptHook(text: string, opportunity: Opportunity): string {
