@@ -145,8 +145,50 @@ function ideaFromSource(sourceText: string, excerpt: string): string {
   return parts.join(" ");
 }
 
+function isCompletePhrase(text: string): boolean {
+  const cleaned = cleanQuote(text).replace(/[.,!?]+$/g, "").trim();
+  if (!cleaned || /…|\.\.\.$/.test(cleaned)) return false;
+  if (words(cleaned).length < 2) return false;
+  return !/\b(wasn't|didn't|isn't|aren't|couldn't|wouldn't|shouldn't|the|a|an|and|or|but|if|that|than|this|these|those|with|from|into|for|to|of|my|your|i|we|they|needed|was|were|problem|realized|eventually)\s*$/i.test(
+    cleaned,
+  );
+}
+
+function punchyFromIdea(claim: string): string | null {
+  if (
+    /\bwasn'?t that I needed more content\b/i.test(claim) ||
+    (/\bneeded more content\b/i.test(claim) && /\b(problem wasn'?t|wasn'?t that)\b/i.test(claim))
+  ) {
+    return "You don't need more content.";
+  }
+  const more = claim.match(/\bwasn'?t that I needed more ([a-z]+)\b/i);
+  if (more) return `You don't need more ${more[1]}.`;
+
+  if (/\bbest moments\b/i.test(claim) && /\balready (?:had|have|there)\b/i.test(claim)) {
+    return "Find the best moments you already have.";
+  }
+  if (/\bmoments\b/i.test(claim) && /\balready (?:had|have|there)\b/i.test(claim)) {
+    return "Find the moments you already have.";
+  }
+
+  if (
+    /\b(one recording|one conversation|one (?:long )?piece)\b/i.test(claim) &&
+    /\bmultiple (?:posts|pieces|assets)\b/i.test(claim)
+  ) {
+    return "One recording can become multiple posts.";
+  }
+  if (/\bcan become multiple (?:posts|pieces)\b/i.test(claim)) {
+    return "One recording can become multiple posts.";
+  }
+
+  return null;
+}
+
 function openingHook(opportunity: Opportunity, idea: string): string {
   const claim = idea;
+
+  const compressed = punchyFromIdea(claim);
+  if (compressed) return compressed;
 
   if (/\bhunting for (?:good )?clips\b/i.test(claim) && /\b(?:look for tension|hunting for tension)\b/i.test(claim)) {
     return "Stop hunting for clips. Start hunting for tension.";
@@ -206,12 +248,18 @@ function openingHook(opportunity: Opportunity, idea: string): string {
   if (punchy) return acceptHook(punchy, opportunity);
 
   const first = usableClauses(claim).find((clause) => !isCategoryName(clause) && !sameLine(clause, opportunity.title)) ?? "";
-  if (first && words(first).length <= 16 && !/\b(into|for|the|a|an|and|to|of)$/i.test(first.trim())) {
+  const tightened = first ? punchyFromIdea(first) : null;
+  if (tightened) return tightened;
+  if (first && words(first).length <= 12 && isCompletePhrase(first)) {
     return acceptHook(first, opportunity);
   }
-  if (first) return acceptHook(words(first).slice(0, 8).join(" "), opportunity);
-  const excerpt = usableClauses(sourceClaim(opportunity)).find((clause) => !isCategoryName(clause));
-  return acceptHook(excerpt || words(cleanQuote(sourceClaim(opportunity))).slice(0, 8).join(" "), opportunity);
+  const excerpt = usableClauses(sourceClaim(opportunity)).find(
+    (clause) => !isCategoryName(clause) && isCompletePhrase(clause) && words(clause).length <= 12,
+  );
+  const anyComplete = usableClauses(claim).find(
+    (clause) => !isCategoryName(clause) && isCompletePhrase(clause),
+  );
+  return acceptHook(excerpt || anyComplete || first);
 }
 
 function acceptHook(text: string, opportunity: Opportunity): string {
@@ -411,16 +459,34 @@ function punchyCaptions(idea: string, hook: string): string {
     const trimmed = sentenceCase(String(raw).replace(/\s+/g, " ").trim());
     const cleaned = trimmed.replace(/[.,]+$/g, "").trim();
     const count = words(cleaned).length;
-    if (count < 2 || count > 8) return;
-    if (cleaned.length > 56 || /…|\.\.\.$/.test(cleaned) || /\bis:?$/i.test(cleaned)) return;
-    if (/\b(into|for|the|a|an|and|to|of)$/i.test(cleaned)) return;
+    if (count < 2 || count > 10) return;
+    if (!isCompletePhrase(cleaned) || /\bis:?$/i.test(cleaned)) return;
     if (META_SPEECH.test(cleaned) || LABEL_TITLES.test(cleaned)) return;
-    if (sameLine(cleaned, claim) && words(cleaned).length >= 10) return;
+    if (sameLine(cleaned, claim) && count >= 10) return;
     const key = textKey(cleaned);
     if (!key || seen.has(key)) return;
     if (captions.some((existing) => sameLine(existing, cleaned))) return;
     seen.add(key);
     captions.push(/[?]$/.test(String(raw).trim()) ? `${cleaned.replace(/[?]+$/g, "")}?` : cleaned);
+  }
+
+  const compressed = punchyFromIdea(claim);
+  if (compressed) add(compressed);
+
+  if (/\bneeded more content\b/i.test(claim) && /\b(problem wasn'?t|wasn'?t that)\b/i.test(claim)) {
+    add("You don't need more content");
+  }
+  if (/\bbest moments\b/i.test(claim) && /\balready (?:had|have|there)\b/i.test(claim)) {
+    add("Find the best moments you already have");
+  } else if (/\bmoments\b/i.test(claim) && /\balready (?:had|have|there)\b/i.test(claim)) {
+    add("Find the moments you already have");
+  }
+  if (
+    (/\b(one recording|one conversation|one (?:long )?piece)\b/i.test(claim) &&
+      /\bmultiple (?:posts|pieces|assets)\b/i.test(claim)) ||
+    /\bcan become multiple (?:posts|pieces)\b/i.test(claim)
+  ) {
+    add("One recording can become multiple posts");
   }
 
   if (/\bclips\b/i.test(claim) && /\btension\b/i.test(claim)) {
@@ -469,16 +535,16 @@ function punchyCaptions(idea: string, hook: string): string {
   if (/\bvaluable moments\b/i.test(claim)) add("The moments already there");
 
   for (const part of hook.split(/(?<=[.!?])\s+/)) {
-    if (words(part).length >= 2 && words(part).length <= 8) add(part);
+    if (isCompletePhrase(part)) add(part);
   }
 
   for (const clause of usableClauses(claim)) {
     if (captions.length >= 3) break;
-    if (words(clause).length <= 8) add(clause);
+    if (isCompletePhrase(clause)) add(clause);
   }
 
-  if (captions.length === 0) {
-    add(words(hook).slice(0, 6).join(" "));
+  if (captions.length === 0 && isCompletePhrase(hook)) {
+    add(hook);
   }
 
   return captions.slice(0, 3).map((line, index) => `${index + 1}. ${line}`).join("\n");
