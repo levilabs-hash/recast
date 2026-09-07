@@ -77,8 +77,9 @@ function splitSentences(text: string): string[] {
 
   return parts.filter((sentence) => {
     const words = sentence.split(/\s+/).filter(Boolean).length;
-    if (sentence.length >= 28 && words >= 6) return true;
-    return !/[.!?]$/.test(sentence) && sentence.length >= 20 && words >= 3;
+    if (words < 3 || sentence.length < 20) return false;
+    if (/\?/.test(sentence) && words < 6) return false;
+    return true;
   });
 }
 
