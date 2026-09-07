@@ -59,15 +59,27 @@ function normalize(text: string): string {
 }
 
 function splitSentences(text: string): string[] {
-  const cleaned = text
-    .replace(/^[A-Za-z]+:\s*/gm, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const withoutSpeakers = text.replace(/^[A-Za-z]+:\s*/gm, "");
+  const lines = withoutSpeakers
+    .split(/\n+/)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean);
 
-  return cleaned
-    .split(/(?<=[.!?])\s+(?=[A-Z“"0-9])/)
-    .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length >= 28 && sentence.split(/\s+/).length >= 6);
+  const parts: string[] = [];
+  for (const line of lines) {
+    const chunks = line
+      .split(/(?<=[.!?])\s+(?=[A-Z“"0-9])/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (chunks.length > 0) parts.push(...chunks);
+    else parts.push(line);
+  }
+
+  return parts.filter((sentence) => {
+    const words = sentence.split(/\s+/).filter(Boolean).length;
+    if (sentence.length >= 28 && words >= 6) return true;
+    return !/[.!?]$/.test(sentence) && sentence.length >= 20 && words >= 3;
+  });
 }
 
 function tokenize(text: string): string[] {
@@ -188,7 +200,7 @@ function namedIdeaTitle(text: string): string | null {
     return "Talk to customers before building";
   }
 
-  if (/\breject/i.test(value) && /\b(information|verdict|quit|unworthy|lesson)\b/i.test(value)) {
+  if (/\breject/i.test(value) && /\b(information|verdict|quit|unworthy|lesson|learn)/i.test(value)) {
     return "Turn rejection into information";
   }
 
@@ -196,7 +208,7 @@ function namedIdeaTitle(text: string): string | null {
     return "Consistency beats motivation";
   }
 
-  if (/\bbusy\b/i.test(value) && /\bprogress\b/i.test(value)) {
+  if (/\bbusy/i.test(value) && /\b(measure|progress|calendar|proof|productive|mattered)\b/i.test(value)) {
     return "Measure progress, not busyness";
   }
   if (/\b(packed calendar|fill every hour|proof of progress)\b/i.test(value) && /\b(progress|productive|mattered)\b/i.test(value)) {
@@ -251,8 +263,12 @@ function namedIdeaTitle(text: string): string | null {
     return "Make the offer specific";
   }
 
-  if (/\bneeded more content\b/i.test(value) || (/\bmoments\b/i.test(value) && /\balready (?:had|have|there)\b/i.test(value))) {
+  if (/\b(needed more content|need more content)\b/i.test(value) || (/\bmoments\b/i.test(value) && /\balready (?:had|have|there)\b/i.test(value))) {
     return "Use the moments you already have";
+  }
+
+  if (/\brepurpos/i.test(value) || (/\blong-form\b/i.test(value) && /\b(content|already have|archive)\b/i.test(value))) {
+    return "Repurpose existing long-form content";
   }
 
   return null;
@@ -331,14 +347,12 @@ function isSourceCopyTitle(title: string, excerpt: string): boolean {
   return e.startsWith(t) || e.includes(t);
 }
 
-function contentIdeaTitle(excerpt: string, existing?: string, context?: string): string {
+function contentIdeaTitle(excerpt: string, existing?: string): string {
   const candidate = existing?.trim() ?? "";
   const namedFromExcerpt = namedIdeaTitle(excerpt);
   if (namedFromExcerpt) return namedFromExcerpt;
   const question = structuralTitle(excerpt);
   if (question && /\?$/.test(question) && wordCount(question) <= 8) return question;
-  const namedFromContext = namedIdeaTitle(context || `${candidate} ${excerpt}`);
-  if (namedFromContext) return namedFromContext;
   if (
     candidate &&
     isGoodContentIdeaTitle(candidate) &&
@@ -496,10 +510,10 @@ export function extractDistinctOpportunities(sourceText: string): Opportunity[] 
   for (const item of ranked) {
     if (selected.length >= max) break;
     const excerpt = cleanQuote(item.sentence);
-    if (excerpt.split(/\s+/).length < 6) continue;
-    if (selected.some((existing) => tooSimilar(existing.excerpt, excerpt))) continue;
-    if (selected.length >= 3 && item.score < 1.5) continue;
+    if (excerpt.split(/\s+/).filter(Boolean).length < 3) continue;
     const topic = contentIdeaTitle(excerpt);
+    if (selected.some((existing) => sameSelectedIdea(existing, excerpt, topic))) continue;
+    if (selected.length >= 3 && !namedIdeaTitle(excerpt) && !ideaTheme(excerpt)) continue;
     selected.push({
       id: `topic-${selected.length + 1}`,
       kind: "topic",
@@ -571,18 +585,39 @@ function ideaTheme(text: string): string | null {
   ) {
     return "tension";
   }
-  if (/busy|meaningful week|fill every hour|one important task|full calendar/.test(value)) {
+  if (
+    /busy|busyness|meaningful week|fill every hour|one important task|full calendar|packed calendar|proof of progress/.test(
+      value,
+    )
+  ) {
     return "progress";
   }
+  if (/customer feedback|talk(?:ing)? to customers|listen(?:ing)? to customer|support thread/.test(value)) {
+    return "customers";
+  }
+  if (/\breject/.test(value)) return "rejection";
   if (/30 posts|atomize|selection is the job|opportunities first|beige content/.test(value)) {
     return "selection";
   }
   if (/47 public|four assets|one long piece a week|almost four/.test(value)) return "yield";
-  if (/archive is not|behind on recast|circle three moments|it's inventory|is inventory/.test(value)) {
+  if (
+    /archive is not|behind on recast|circle three moments|it's inventory|is inventory|repurpos|long-form|need more content/.test(
+      value,
+    )
+  ) {
     return "inventory";
   }
   if (/28-second|four formats|almost cut|1\.2 million|imposter syndrome/.test(value)) return "oneline";
   return null;
+}
+
+function sameSelectedIdea(existing: Opportunity, excerpt: string, topic: string): boolean {
+  const existingTopic = (existing.topic || existing.title).toLowerCase();
+  if (existingTopic === topic.toLowerCase()) return true;
+  if (tooSimilar(existing.excerpt, excerpt)) return true;
+  const left = ideaTheme(existing.excerpt);
+  const right = ideaTheme(excerpt);
+  return Boolean(left && right && left === right);
 }
 
 function sameIdea(sentences: string[], left: string, right: string): boolean {
@@ -659,21 +694,11 @@ function applySummaryPolicy(sourceText: string, items: Opportunity[]): Opportuni
   return kept.slice(0, 5);
 }
 
-function ideaContext(sourceText: string, excerpt: string): string {
-  const needle = cleanQuote(excerpt).toLowerCase().slice(0, 48);
-  const match = sourceParagraphsForSummary(sourceText).find((paragraph) => {
-    const hay = cleanQuote(paragraph).toLowerCase();
-    return hay.includes(needle) || ideaOverlap(paragraph, excerpt) >= 0.4;
-  });
-  return match ? `${excerpt} ${match}` : excerpt;
-}
-
 export function polishOpportunityPresentation(sourceText: string, items: Opportunity[]): Opportunity[] {
   const used = new Set<string>();
   const titled = items.map((item) => {
     const excerpt = cleanQuote(item.excerpt || item.topic || item.title || "");
-    const context = ideaContext(sourceText, excerpt);
-    let topic = contentIdeaTitle(excerpt, item.topic || item.title, context);
+    let topic = contentIdeaTitle(excerpt, item.topic || item.title);
     const key = topic.toLowerCase();
     if (used.has(key)) {
       const alt = structuralTitle(excerpt) || fallbackTitle(excerpt);
@@ -696,8 +721,8 @@ export function refineDistinctOpportunities(
   for (const item of [...extracted, ...incoming]) {
     const excerpt = cleanQuote(item.excerpt || item.title || item.topic || "");
     const topic = contentIdeaTitle(excerpt, item.topic || item.title);
-    if (!excerpt || excerpt.split(/\s+/).length < 6) continue;
-    if (merged.some((existing) => tooSimilar(existing.excerpt, excerpt))) continue;
+    if (!excerpt || excerpt.split(/\s+/).filter(Boolean).length < 3) continue;
+    if (merged.some((existing) => sameSelectedIdea(existing, excerpt, topic))) continue;
     merged.push({
       id: `topic-${merged.length + 1}`,
       kind: "topic",
