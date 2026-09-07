@@ -1,4 +1,10 @@
-import { analyzeLocally, extractDistinctOpportunities, generateLocally, refineDistinctOpportunities } from "./local-engine";
+import {
+  analyzeLocally,
+  extractDistinctOpportunities,
+  generateLocally,
+  polishOpportunityPresentation,
+  refineDistinctOpportunities,
+} from "./local-engine";
 import {
   analyzeWithOpenAI,
   generateWithOpenAI,
@@ -9,7 +15,7 @@ import {
   outputsToPackages,
 } from "./opportunity-schema";
 import { normalizePlatforms, type PlatformId } from "./platforms";
-import { generateTikTok, type TikTokUsed } from "./platforms/tiktok";
+import { generateTikTok } from "./platforms/tiktok";
 import type { AnalysisResult, GeneratedPiece, GenerationResult, Opportunity } from "./types";
 
 const MIN_CHARS = 80;
@@ -55,10 +61,13 @@ export async function analyzeContent(sourceText: string): Promise<AnalysisResult
 function resolveOpportunities(sourceText: string, incoming: Opportunity[]): Opportunity[] {
   const parsed = normalizeAnalyzeOpportunities({ opportunities: incoming });
   const extracted = extractDistinctOpportunities(sourceText);
-  if (parsed.length <= 1 && extracted.length >= 2 && sourceText.length >= 500) {
-    return extracted;
-  }
-  return parsed.length > 0 ? parsed : extracted;
+  const resolved =
+    parsed.length <= 1 && extracted.length >= 2 && sourceText.length >= 500
+      ? extracted
+      : parsed.length > 0
+        ? parsed
+        : extracted;
+  return polishOpportunityPresentation(sourceText, resolved);
 }
 
 function applyTikTokGenerator(
@@ -73,47 +82,19 @@ function applyTikTokGenerator(
     };
   }
 
-  const used: TikTokUsed = { hooks: [], scripts: [], ctas: [], captions: [], paragraphs: [] };
-  const tiktokFields = new Map<string, Record<string, string>>();
-  for (const opportunity of opportunities) {
-    tiktokFields.set(opportunity.id, generateTikTok(sourceText, opportunity, used));
-  }
-
-  const outputs: GeneratedPiece[] = [];
-  const seenTikTok = new Set<string>();
-
-  for (const output of result.outputs) {
-    if (output.platform !== "tiktok") {
-      outputs.push(output);
-      continue;
-    }
-    const opportunity = opportunities.find((item) => item.id === output.opportunityId);
-    const fields = tiktokFields.get(output.opportunityId);
-    if (!opportunity || !fields) {
-      outputs.push(output);
-      continue;
-    }
-    outputs.push({ ...output, fields });
-    seenTikTok.add(opportunity.id);
-  }
-
-  for (const opportunity of opportunities) {
-    if (seenTikTok.has(opportunity.id)) continue;
-    const fields = tiktokFields.get(opportunity.id);
-    if (!fields) continue;
-    outputs.push({
-      opportunityId: opportunity.id,
-      opportunityTitle: opportunity.title,
-      opportunityKind: opportunity.kind,
-      platform: "tiktok",
-      fields,
-    });
-  }
+  const tiktokOutputs: GeneratedPiece[] = opportunities.map((opportunity) => ({
+    opportunityId: opportunity.id,
+    opportunityTitle: opportunity.title,
+    opportunityKind: opportunity.kind,
+    platform: "tiktok",
+    fields: generateTikTok(sourceText, opportunity),
+  }));
+  const otherOutputs = result.outputs.filter((output) => output.platform !== "tiktok");
 
   return {
     ...result,
-    outputs,
-    opportunities: outputsToPackages(outputs),
+    outputs: [...tiktokOutputs, ...otherOutputs],
+    opportunities: outputsToPackages(tiktokOutputs),
   };
 }
 

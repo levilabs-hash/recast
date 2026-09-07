@@ -108,6 +108,249 @@ function titleFromSentence(sentence: string): string {
   return `${cut.slice(0, lastSpace > 40 ? lastSpace : 70).trim()}…`;
 }
 
+function wordCount(text: string): number {
+  return cleanQuote(text).split(/\s+/).filter(Boolean).length;
+}
+
+function sentenceCaseTitle(text: string): string {
+  const trimmed = cleanQuote(text).replace(/[.…]+$/g, "").replace(/\s+/g, " ").trim();
+  if (!trimmed) return trimmed;
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+}
+
+function isCompleteIdea(text: string): boolean {
+  const cleaned = cleanQuote(text).replace(/[.,!?]+$/g, "").trim();
+  if (!cleaned || /[…]|\.{3}$/.test(cleaned)) return false;
+  if (wordCount(cleaned) < 2) return false;
+  return !/\b(the|a|an|and|or|but|if|that|than|this|with|from|into|for|to|of|my|your|i|we|they)\s*$/i.test(
+    cleaned,
+  );
+}
+
+function isGoodContentIdeaTitle(title: string): boolean {
+  const cleaned = cleanQuote(title).replace(/[.…]+$/g, "").trim();
+  if (!cleaned) return false;
+  if (/[…]|\.{3}$/.test(title)) return false;
+  const count = wordCount(cleaned);
+  if (count < 2 || count > 8) return false;
+  if (cleaned.length > 56) return false;
+  if (/[.!?].+\w/.test(cleaned)) return false;
+  if (
+    /^(i |we |they |most people |eventually |for \w+ years |then i |i used to |i started |creators |that's |host:|maya:|the days i |that sentence )/i.test(
+      cleaned,
+    )
+  ) {
+    return false;
+  }
+  if (/\b[A-Za-z]$/.test(cleaned) && (cleaned.split(/\s+/).pop() ?? "").length === 1) return false;
+  return isCompleteIdea(cleaned);
+}
+
+function stripTitleLeadIns(text: string): string {
+  let cleaned = cleanQuote(text);
+  const patterns = [
+    /^(the line that changes the piece:|the line i almost cut:|nobody wants to say this out loud:|contrarian:|how-to:|story:)\s*/i,
+    /^(i used to think that|i used to think|i used to|eventually i realized that|eventually i realized|the shift was simple\.?|most people (?:treat|think|assume)|for two years|then i started|then i )\s*/i,
+    /^(and that's|that's the part nobody believes\.?|no\.?\s+)/i,
+    /^(what people get wrong about|the moment the idea became obvious:?)\s*/i,
+  ];
+  let prev = "";
+  while (cleaned !== prev) {
+    prev = cleaned;
+    for (const pattern of patterns) {
+      cleaned = cleaned.replace(pattern, "").trim();
+    }
+  }
+  return cleaned.replace(/[.…]+$/g, "").trim();
+}
+
+function shortNoun(text: string): string {
+  const cleaned = cleanQuote(text)
+    .replace(/^(a |an |the )/i, "")
+    .replace(/[.…]+$/g, "")
+    .trim();
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length <= 4) return cleaned;
+  return parts.slice(-3).join(" ");
+}
+
+function namedIdeaTitle(text: string): string | null {
+  const value = text;
+
+  if (
+    /\b(customer feedback|talk(?:ing)? to customers|listen(?:ing)? to customer|users (?:told|said)|support thread)\b/i.test(
+      value,
+    )
+  ) {
+    return "Talk to customers before building";
+  }
+  if (/\bcustomers?\b/i.test(value) && /\b(brief|feedback|before building)\b/i.test(value)) {
+    return "Talk to customers before building";
+  }
+
+  if (/\breject/i.test(value) && /\b(information|verdict|quit|unworthy|lesson)\b/i.test(value)) {
+    return "Turn rejection into information";
+  }
+
+  if (/\bmotivat/i.test(value) && /\b(habit|discipline|operating system|disappear|inspired|consistency)\b/i.test(value)) {
+    return "Consistency beats motivation";
+  }
+
+  if (/\bbusy\b/i.test(value) && /\bprogress\b/i.test(value)) {
+    return "Measure progress, not busyness";
+  }
+  if (/\b(packed calendar|fill every hour|proof of progress)\b/i.test(value) && /\b(progress|productive|mattered)\b/i.test(value)) {
+    return "Measure progress, not busyness";
+  }
+  if (/\bone (important )?task\b/i.test(value) && /\b(day|successful|count)\b/i.test(value)) {
+    return "One important task";
+  }
+
+  if (/\bimagined\b/i.test(value) && /\bproblem/i.test(value)) {
+    return "Stop solving imagined problems";
+  }
+  if (/\bnobody asked\b/i.test(value) && /\b(built|features?|product)\b/i.test(value)) {
+    return "Stop solving imagined problems";
+  }
+
+  if (/\bclips\b/i.test(value) && /\btension\b/i.test(value)) {
+    return "Hunt for tension, not clips";
+  }
+
+  if (/\bpackaging\b/i.test(value) && /\bconfidence\b/i.test(value)) {
+    return "Packaging, not confidence";
+  }
+
+  if (/\b28-second\b/i.test(value) || /\bfour formats\b/i.test(value) || /\bsame 12 words\b/i.test(value)) {
+    return "The line you almost cut";
+  }
+
+  if (/\balmost cut\b/i.test(value) || /\baside you almost\b/i.test(value)) {
+    return "The line you almost cut";
+  }
+
+  if (
+    /\bselection is the job\b/i.test(value) ||
+    /\bidentify the opportunities first\b/i.test(value) ||
+    /\batomize too early\b/i.test(value) ||
+    /\b30 posts\b/i.test(value) ||
+    (/\btranscript\b/i.test(value) && /\bask ai\b/i.test(value))
+  ) {
+    return "Select before you generate";
+  }
+
+  if (/\b(almost )?four assets\b/i.test(value) || (/\b47 public\b/i.test(value) && /\bsource pieces\b/i.test(value))) {
+    return "Four assets from one piece";
+  }
+
+  if (/\barchive is not a graveyard\b/i.test(value) || (/\binventory\b/i.test(value) && /\brecast/i.test(value))) {
+    return "Your archive is inventory";
+  }
+
+  if (/\bsame brain, different box\b/i.test(value) || (/\bvague\b/i.test(value) && /\bsold\b/i.test(value))) {
+    return "Make the offer specific";
+  }
+
+  if (/\bneeded more content\b/i.test(value) || (/\bmoments\b/i.test(value) && /\balready (?:had|have|there)\b/i.test(value))) {
+    return "Use the moments you already have";
+  }
+
+  return null;
+}
+
+function structuralTitle(text: string): string | null {
+  const cleaned = stripTitleLeadIns(text);
+
+  const turn = cleaned.match(/\bturn(?:ed|ing)?\s+([^.]{3,28})\s+into\s+([^.]{3,28})/i);
+  if (turn) {
+    const title = `Turn ${shortNoun(turn[1])} into ${shortNoun(turn[2])}`;
+    if (isGoodContentIdeaTitle(title)) return sentenceCaseTitle(title);
+  }
+
+  const beats = cleaned.match(/\b([A-Za-z]+(?: [A-Za-z]+){0,2})\s+beats\s+([A-Za-z]+(?: [A-Za-z]+){0,2})/i);
+  if (beats && isGoodContentIdeaTitle(beats[0])) return sentenceCaseTitle(beats[0]);
+
+  const contrast = cleaned.match(
+    /\bnot (?:a |an |the )?([^.,]{3,32}).{0,40}(?:it is|it's) (?:a |an |the )?([^.,]{3,32})/i,
+  );
+  if (contrast) {
+    const title = `${shortNoun(contrast[2])}, not ${shortNoun(contrast[1])}`;
+    if (isGoodContentIdeaTitle(title)) return sentenceCaseTitle(title);
+  }
+
+  const stopped = cleaned.match(/\bstopped\s+([^.]{3,28})\s+and started\s+([^.]{3,28})/i);
+  if (stopped) {
+    const title = `${sentenceCaseTitle(shortNoun(stopped[2]))}, not ${shortNoun(stopped[1])}`;
+    if (wordCount(title) <= 8 && isCompleteIdea(title)) return title;
+  }
+
+  const terrible = cleaned.match(
+    /\b([A-Za-z]+(?: [A-Za-z]+){0,2})\s+is a terrible\s+([A-Za-z]+(?: [A-Za-z]+){0,3})/i,
+  );
+  if (terrible && isGoodContentIdeaTitle(terrible[0])) return sentenceCaseTitle(terrible[0]);
+
+  const question = cleaned.match(/[^?]{6,48}\?/);
+  if (question && wordCount(question[0]) <= 8) return question[0].trim();
+
+  return null;
+}
+
+function shortestCompleteClause(text: string): string {
+  const parts = stripTitleLeadIns(text)
+    .split(/[.;:!?—–]/)
+    .flatMap((part) => part.split(/,\s+(?=[A-Z])/))
+    .map((part) => part.replace(/^(and|or|but|so|because|then)\s+/i, "").trim())
+    .filter((part) => {
+      const count = wordCount(part);
+      return count >= 3 && count <= 8 && isCompleteIdea(part);
+    })
+    .sort((a, b) => a.length - b.length);
+  return parts[0] ?? "";
+}
+
+function fallbackTitle(text: string): string {
+  const question = stripTitleLeadIns(text).match(/[^?]{6,48}\?/);
+  if (question && wordCount(question[0]) <= 8) return question[0].trim();
+  const clause = shortestCompleteClause(text);
+  if (clause) return sentenceCaseTitle(clause);
+  const words = stripTitleLeadIns(text).split(/\s+/).filter(Boolean);
+  const slice = words.slice(0, Math.min(6, words.length));
+  while (
+    slice.length > 3 &&
+    /^(the|a|an|and|or|but|to|of|for|with|from|into)$/i.test(slice[slice.length - 1] ?? "")
+  ) {
+    slice.pop();
+  }
+  return sentenceCaseTitle(slice.join(" "));
+}
+
+function isSourceCopyTitle(title: string, excerpt: string): boolean {
+  const t = cleanQuote(title).toLowerCase().replace(/[.…]+$/g, "").trim();
+  const e = cleanQuote(excerpt).toLowerCase();
+  if (!t || t.length < 12) return false;
+  return e.startsWith(t) || e.includes(t);
+}
+
+function contentIdeaTitle(excerpt: string, existing?: string, context?: string): string {
+  const candidate = existing?.trim() ?? "";
+  const namedFromExcerpt = namedIdeaTitle(excerpt);
+  if (namedFromExcerpt) return namedFromExcerpt;
+  const question = structuralTitle(excerpt);
+  if (question && /\?$/.test(question) && wordCount(question) <= 8) return question;
+  const namedFromContext = namedIdeaTitle(context || `${candidate} ${excerpt}`);
+  if (namedFromContext) return namedFromContext;
+  if (
+    candidate &&
+    isGoodContentIdeaTitle(candidate) &&
+    !isSourceCopyTitle(candidate, excerpt) &&
+    !/^key takeaways$/i.test(candidate)
+  ) {
+    return sentenceCaseTitle(candidate);
+  }
+  if (question && !isSourceCopyTitle(question, excerpt)) return question;
+  return fallbackTitle(excerpt || candidate);
+}
+
 function rewriteAsHook(sentence: string, variant: number): string {
   const short = titleFromSentence(sentence);
   const patterns = [
@@ -267,7 +510,7 @@ export function extractDistinctOpportunities(sourceText: string): Opportunity[] 
       continue;
     }
     if (selected.length >= (longSource ? 3 : 1) && item.score < 1.5) continue;
-    const topic = titleFromSentence(excerpt);
+    const topic = contentIdeaTitle(excerpt);
     selected.push({
       id: `topic-${selected.length + 1}`,
       kind: "topic",
@@ -280,8 +523,8 @@ export function extractDistinctOpportunities(sourceText: string): Opportunity[] 
 
   if (selected.length === 0 && sentences[0]) {
     const excerpt = cleanQuote(sentences[0]);
-    const topic = titleFromSentence(excerpt);
-    return [
+    const topic = contentIdeaTitle(excerpt);
+    return polishOpportunityPresentation(text, [
       {
         id: "topic-1",
         kind: "topic",
@@ -290,10 +533,10 @@ export function extractDistinctOpportunities(sourceText: string): Opportunity[] 
         excerpt,
         whyValuable: buildWhy("topic", excerpt),
       },
-    ];
+    ]);
   }
 
-  return selected;
+  return polishOpportunityPresentation(text, selected);
 }
 
 function ideaOverlap(a: string, b: string): number {
@@ -366,50 +609,93 @@ function sameIdea(sentences: string[], left: string, right: string): boolean {
   return ideaOverlap(ideaWindow(sentences, left), ideaWindow(sentences, right)) >= 0.38;
 }
 
-function conciseTitle(text: string): string {
-  const cleaned = cleanQuote(text)
-    .replace(
-      /^(the line that changes the piece:|the line i almost cut:|nobody wants to say this out loud:|contrarian:|how-to:|story:)\s*/i,
-      "",
-    )
-    .replace(/^(what people get wrong about|turn |the moment the idea became obvious:?)\s*/i, "")
-    .replace(/[.]+$/, "")
-    .trim();
+function sourceParagraphsForSummary(sourceText: string): string[] {
+  return sourceText
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter((paragraph) => paragraph.length >= 40);
+}
 
-  if (/\bbusy\b/i.test(cleaned) && /\bprogress\b/i.test(cleaned)) return "Busy vs Progress";
-  if (/\bone (important )?task\b/i.test(cleaned) && /\b(successful|day|fill)/i.test(cleaned)) {
-    return "One Important Task";
-  }
-  if (/\bhunting for (?:good )?clips\b/i.test(cleaned) && /\btension\b/i.test(cleaned)) {
-    return "Hunt for Tension";
-  }
-  if (/\bpackaging\b/i.test(cleaned) && /\bconfidence\b/i.test(cleaned)) {
-    return "Packaging vs Confidence";
-  }
-  const contrast = cleaned.match(
-    /\bnot (?:a |an |the )?([^.,]{3,28}).{0,24}(?:it is|it's) (?:a |an |the )?([^.,]{3,28})/i,
-  );
-  if (contrast) {
-    return `${titleCase(contrast[1].trim())} vs ${titleCase(contrast[2].trim())}`;
+function isBroadSummary(excerpt: string, title: string, sourceText: string, siblings: Opportunity[]): boolean {
+  if (/^key takeaways$/i.test(title.trim()) || /key takeaways?|in summary|to summarize|overview|main (?:points|ideas)|the whole (?:piece|source|transcript|video)/i.test(`${title} ${excerpt}`)) {
+    return true;
   }
 
-  const question = cleaned.match(/[^?]{6,70}\?/);
-  if (question && question[0].split(/\s+/).length <= 12) {
-    return question[0].trim();
-  }
-  if (cleaned.length <= 72 && !/[.]\s/.test(cleaned) && !/[….]{2,}$|…/.test(cleaned)) {
-    return cleaned;
+  const paragraphs = sourceParagraphsForSummary(sourceText);
+  if (paragraphs.length >= 3) {
+    const hits = paragraphs.filter(
+      (paragraph) =>
+        ideaOverlap(excerpt, paragraph) >= 0.35 ||
+        excerpt.toLowerCase().includes(paragraph.slice(0, 40).toLowerCase()),
+    ).length;
+    if (hits >= 3) return true;
   }
 
-  const protectedCommas = cleaned.replace(/(\$\d{1,3}),(\d{3})/g, "$1COMMA$2");
-  const clause = (protectedCommas.split(/[:,]/)[0] ?? cleaned).replace(/COMMA/g, ",").trim();
-  const clauseWords = clause.split(/\s+/).filter(Boolean);
-  if (clauseWords.length >= 4 && clauseWords.length <= 12 && !/^(and|or|then|but)\b/i.test(clause)) {
-    return clause;
+  const sourceTokens = new Set(tokenize(sourceText));
+  const excerptTokens = new Set(tokenize(excerpt));
+  if (sourceTokens.size >= 50) {
+    const covered = [...sourceTokens].filter((token) => excerptTokens.has(token)).length / sourceTokens.size;
+    if (covered >= 0.55 && wordCount(excerpt) >= 40) return true;
   }
-  const cut = cleaned.slice(0, 64);
-  const lastSpace = cut.lastIndexOf(" ");
-  return `${cut.slice(0, lastSpace > 28 ? lastSpace : 64).trim()}`;
+
+  const siblingHits = siblings.filter((item) => lexicalOverlap(excerpt, item.excerpt) >= 0.28).length;
+  return siblingHits >= 3;
+}
+
+function applySummaryPolicy(sourceText: string, items: Opportunity[]): Opportunity[] {
+  if (items.length === 0) return items;
+  const marked = items.map((item, index) => ({
+    item,
+    summary: isBroadSummary(
+      item.excerpt,
+      item.title || item.topic || "",
+      sourceText,
+      items.filter((_, other) => other !== index),
+    ),
+  }));
+  const strong = marked.filter((entry) => !entry.summary).map((entry) => entry.item);
+  const summaries = marked.filter((entry) => entry.summary).map((entry) => entry.item);
+
+  if (strong.length >= 4) return strong.slice(0, 5);
+
+  const kept = [...strong];
+  if (summaries.length > 0 && kept.length < 5) {
+    const first = summaries[0];
+    kept.push({
+      ...first,
+      title: "Key Takeaways",
+      topic: "Key Takeaways",
+    });
+  }
+  return kept.slice(0, 5);
+}
+
+function ideaContext(sourceText: string, excerpt: string): string {
+  const needle = cleanQuote(excerpt).toLowerCase().slice(0, 48);
+  const match = sourceParagraphsForSummary(sourceText).find((paragraph) => {
+    const hay = cleanQuote(paragraph).toLowerCase();
+    return hay.includes(needle) || ideaOverlap(paragraph, excerpt) >= 0.4;
+  });
+  return match ? `${excerpt} ${match}` : excerpt;
+}
+
+export function polishOpportunityPresentation(sourceText: string, items: Opportunity[]): Opportunity[] {
+  const used = new Set<string>();
+  const titled = items.map((item) => {
+    const excerpt = cleanQuote(item.excerpt || item.topic || item.title || "");
+    const context = ideaContext(sourceText, excerpt);
+    let topic = contentIdeaTitle(excerpt, item.topic || item.title, context);
+    const key = topic.toLowerCase();
+    if (used.has(key)) {
+      const alt = structuralTitle(excerpt) || fallbackTitle(excerpt);
+      if (alt && !used.has(alt.toLowerCase()) && isGoodContentIdeaTitle(alt)) {
+        topic = sentenceCaseTitle(alt);
+      }
+    }
+    used.add(topic.toLowerCase());
+    return { ...item, title: topic, topic };
+  });
+  return applySummaryPolicy(sourceText, titled);
 }
 
 export function refineDistinctOpportunities(
@@ -420,7 +706,7 @@ export function refineDistinctOpportunities(
   const merged: Opportunity[] = [];
   for (const item of [...extracted, ...incoming]) {
     const excerpt = cleanQuote(item.excerpt || item.title || item.topic || "");
-    const topic = item.topic || item.title || titleFromSentence(excerpt);
+    const topic = contentIdeaTitle(excerpt, item.topic || item.title);
     if (!excerpt || excerpt.split(/\s+/).length < 6) continue;
     if (merged.some((existing) => tooSimilar(existing.excerpt, excerpt))) continue;
     if (merged.some((existing) => paragraphKey(sourceText, existing.excerpt) === paragraphKey(sourceText, excerpt))) {
@@ -436,7 +722,7 @@ export function refineDistinctOpportunities(
     });
     if (merged.length >= 5) break;
   }
-  return merged.length > 0 ? merged : extracted;
+  return polishOpportunityPresentation(sourceText, merged.length > 0 ? merged : extracted);
 }
 
 export function generateLocally(
