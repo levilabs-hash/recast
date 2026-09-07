@@ -20,9 +20,10 @@ function sentenceCase(text: string): string {
 }
 
 function endSentence(text: string): string {
-  const trimmed = sentenceCase(text);
+  const trimmed = String(text).replace(/\s+/g, " ").replace(/^[.,]+|[.,]+$/g, "").trim();
   if (!trimmed) return trimmed;
-  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  const cased = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  return /[.!?]$/.test(cased) ? cased : `${cased}.`;
 }
 
 function isCategoryName(title: string): boolean {
@@ -38,8 +39,12 @@ function isCategoryName(title: string): boolean {
 }
 
 function sourceSentences(sourceText: string): string[] {
-  return cleanQuote(sourceText)
+  return sourceText
+    .replace(/\r\n/g, "\n")
+    .replace(/[“”]/g, '"')
     .replace(/^[A-Za-z]+:\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim()
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence.length >= 12 && words(sentence).length >= 4);
@@ -142,6 +147,16 @@ function ideaFromSource(sourceText: string, excerpt: string): string {
     if (rest && !parts.some((part) => sameLine(part, rest))) parts.push(rest);
   }
 
+  if (/\b(busy|progress|important task|fill(?:ing|ed)? the day)\b/i.test(claim)) {
+    const busy = source.match(/[^.?!]*\bbusy\b[^.?!]*[.?!]/i)?.[0];
+    const progress = source.match(/[^.?!]*\b(meaningful progress|progress)\b[^.?!]*[.?!]/i)?.[0];
+    const task = source.match(/[^.?!]*\b(one important task|one task)\b[^.?!]*[.?!]/i)?.[0];
+    const win = source.match(/[^.?!]*\b(day successful|successful day|make the day)\b[^.?!]*[.?!]/i)?.[0];
+    for (const line of [busy, progress, task, win]) {
+      if (line && !parts.some((part) => sameLine(part, line))) parts.push(line);
+    }
+  }
+
   return parts.join(" ");
 }
 
@@ -155,6 +170,16 @@ function isCompletePhrase(text: string): boolean {
 }
 
 function punchyFromIdea(claim: string): string | null {
+  if (/\bbusy\b/i.test(claim) && /\b(progress|meaningful)\b/i.test(claim)) {
+    return "Busy isn't the same as progress.";
+  }
+  if (/\bfill(?:ing|ed)? the day\b/i.test(claim) && /\b(one (important )?task|important task)\b/i.test(claim)) {
+    return "Stop filling the day. Choose one important task.";
+  }
+  if (/\bone (important )?task\b/i.test(claim) && /\b(successful|progress|counts)\b/i.test(claim)) {
+    return "Choose the one task that makes the day count.";
+  }
+
   if (
     /\bwasn'?t that I needed more content\b/i.test(claim) ||
     (/\bneeded more content\b/i.test(claim) && /\b(problem wasn'?t|wasn'?t that)\b/i.test(claim))
@@ -376,29 +401,77 @@ function passageAround(sourceText: string, idea: string): string[] {
   return sentences.slice(start, start + 7);
 }
 
-function buildSpokenScript(hook: string, beats: string[], idea: string, sourceText: string): string {
-  const body = beats.filter((beat) => beat && !sameLine(beat, hook));
+function repeatsHook(text: string, hook: string): boolean {
+  const left = textKey(text);
+  const right = textKey(hook);
+  if (!left || !right) return false;
+  if (left === right || left.startsWith(right) || right.startsWith(left)) return true;
+  return sameLine(text, hook);
+}
 
-  for (const sentence of passageAround(sourceText, idea)) {
-    if (body.length >= 4 && words([hook, ...body].join(" ")).length >= 60) break;
-    if (sameLine(sentence, hook) || body.some((existing) => sameLine(existing, sentence))) continue;
-    if (META_SPEECH.test(sentence) || HOST_OPENER.test(sentence)) continue;
-    body.push(endSentence(sentence));
+function buildSpokenScript(hook: string, beats: string[], idea: string, sourceText: string): string {
+  const middle: string[] = [];
+
+  function take(text: string | null | undefined) {
+    if (!text || META_SPEECH.test(text) || HOST_OPENER.test(text)) return;
+    if (repeatsHook(text, hook)) return;
+    if (middle.some((existing) => sameLine(existing, text))) return;
+    if (words(text).length < 5) return;
+    middle.push(endSentence(text));
   }
 
-  if (body.length === 0) {
-    for (const sentence of completeFromSource(sourceText, idea)) {
-      if (sameLine(sentence, hook) || META_SPEECH.test(sentence)) continue;
-      body.push(endSentence(sentence));
-      if (body.length >= 2) break;
+  for (const sentence of passageAround(sourceText, idea)) take(sentence);
+  for (const beat of beats) {
+    if (middle.length >= 3) break;
+    take(beat);
+  }
+
+  if (middle.length < 2) {
+    for (const sentence of sourceSentences(sourceText)) {
+      if (middle.length >= 3) break;
+      if (!sharesIdea(sentence, idea)) continue;
+      take(sentence);
     }
   }
 
-  return [hook, ...body].join("\n\n");
+  const trimmed = middle.slice(0, 4);
+  const opening = endSentence(hook);
+  const first = trimmed[0];
+  const rest = trimmed.slice(1);
+  const script = first ? [`${opening} ${first}`, ...rest].join("\n\n") : opening;
+
+  const count = words(script).length;
+  if (count >= 55 && count <= 110) return script;
+  if (count < 55) {
+    const extra = sourceSentences(sourceText).filter(
+      (sentence) => !repeatsHook(sentence, hook) && sharesIdea(sentence, idea) && !trimmed.some((item) => sameLine(item, sentence)),
+    );
+    const filled = [...trimmed];
+    for (const sentence of extra) {
+      if (words([opening, ...filled].join(" ")).length >= 60) break;
+      filled.push(endSentence(sentence));
+    }
+    const next = filled[0];
+    return next ? [`${opening} ${next}`, ...filled.slice(1)].join("\n\n") : opening;
+  }
+  return script;
 }
 
-function viewerCta(idea: string): string {
+const BANNED_CTA =
+  /recast this moment|last recording, save it|follow for more recasts|generation|transcript|prompt|internal|ai generated|do not /i;
+
+function viewerCta(idea: string, hook: string): string {
   const claim = idea;
+
+  if (/\b(one (important )?task|make (?:the |today |your )?day successful|day (?:count|successful))\b/i.test(claim)) {
+    return "What's the one task that would make today successful? Comment it.";
+  }
+  if (/\bbusy\b/i.test(claim) && /\b(progress|meaningful|forward)\b/i.test(claim)) {
+    return "Are you busy, or making real progress? Comment the difference.";
+  }
+  if (/\bfill(?:ing|ed)? the day\b/i.test(claim) && /\btasks?\b/i.test(claim)) {
+    return "What's the one task you would keep if you cleared the rest? Comment it.";
+  }
 
   if (
     /\b(?:look for tension|hunting for tension)\b/i.test(claim) ||
@@ -447,7 +520,18 @@ function viewerCta(idea: string): string {
     return "Save this if you've been trying to create more from nothing.";
   }
 
-  return "If this changed how you look at your last recording, save it.";
+  const core = hook.replace(/[.?!]+$/g, "").trim();
+  if (/\?$/.test(hook) && core.length >= 8) {
+    return `What's your take? ${core}? Comment below.`;
+  }
+  if (core.length >= 8 && core.length <= 72) {
+    return `If this is you, comment how you'd apply this: ${core}.`;
+  }
+  const choose = claim.match(/\b(choose|choosing|pick|picking) ([^.!?]{8,48})/i);
+  if (choose) {
+    return `Are you ready to ${choose[1].toLowerCase()} ${choose[2].trim()}? Tell me below.`;
+  }
+  return `What would you change first after hearing this? Comment it.`;
 }
 
 function punchyCaptions(idea: string, hook: string): string {
@@ -465,13 +549,24 @@ function punchyCaptions(idea: string, hook: string): string {
     if (sameLine(cleaned, claim) && count >= 10) return;
     const key = textKey(cleaned);
     if (!key || seen.has(key)) return;
-    if (captions.some((existing) => sameLine(existing, cleaned))) return;
+    if (captions.some((existing) => {
+      const a = textKey(existing);
+      const b = textKey(cleaned);
+      return sameLine(existing, cleaned) || a.includes(b) || b.includes(a);
+    })) return;
     seen.add(key);
     captions.push(/[?]$/.test(String(raw).trim()) ? `${cleaned.replace(/[?]+$/g, "")}?` : cleaned);
   }
 
   const compressed = punchyFromIdea(claim);
   if (compressed) add(compressed);
+
+  if (/\b(one (important )?task|important task)\b/i.test(claim)) {
+    add("Choose one important task");
+  }
+  if (/\b(day successful|successful day|make the day)\b/i.test(claim)) {
+    add("Make the day successful");
+  }
 
   if (/\bneeded more content\b/i.test(claim) && /\b(problem wasn'?t|wasn'?t that)\b/i.test(claim)) {
     add("You don't need more content");
@@ -547,7 +642,46 @@ function punchyCaptions(idea: string, hook: string): string {
     add(hook);
   }
 
-  return captions.slice(0, 3).map((line, index) => `${index + 1}. ${line}`).join("\n");
+  return captions.slice(0, 3).join("\n");
+}
+
+function stripLabels(text: string): string {
+  return text
+    .replace(/^\s*(HOOK|BEAT(?: \d+)?|CTA|SCRIPT|SOURCE)\b\s*[:\-–]?\s*/gim, "")
+    .replace(/\b(do not recast|recast this moment from the source|internal instructions?)\b/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function finalizeTikTok(
+  opportunity: Opportunity,
+  idea: string,
+  fields: Record<string, string>,
+): Record<string, string> {
+  let hook = stripLabels(fields.hook);
+  let spokenScript = stripLabels(fields.spokenScript);
+  let onScreenText = stripLabels(fields.onScreenText).replace(/^\d+\.\s*/gm, "").trim();
+  let cta = stripLabels(fields.cta);
+
+  if (sameLine(hook, opportunity.title) || isCategoryName(hook)) {
+    hook = punchyFromIdea(idea) || hook;
+  }
+
+  const firstBlock = spokenScript.split(/\n\n/)[0] ?? "";
+  if (repeatsHook(firstBlock, hook) && firstBlock.trim() === endSentence(hook)) {
+    const rest = spokenScript.split(/\n\n/).slice(1).join("\n\n");
+    spokenScript = rest ? `${endSentence(hook)} ${rest}` : spokenScript;
+  }
+
+  if (BANNED_CTA.test(cta) || !cta.trim()) {
+    cta = viewerCta(idea, hook);
+  }
+
+  if (!onScreenText.trim()) {
+    onScreenText = punchyCaptions(idea, hook);
+  }
+
+  return { hook, spokenScript, onScreenText, cta };
 }
 
 export function generateTikTok(
@@ -557,13 +691,13 @@ export function generateTikTok(
   const idea = ideaFromSource(sourceText, sourceClaim(opportunity));
   const hook = openingHook(opportunity, idea);
   const beats = spokenBeats(hook, idea, sourceText);
-  const cta = viewerCta(idea);
+  const cta = viewerCta(idea, hook);
   const spokenScript = buildSpokenScript(hook, beats, idea, sourceText);
 
-  return {
+  return finalizeTikTok(opportunity, idea, {
     hook,
     spokenScript,
     onScreenText: punchyCaptions(idea, hook),
     cta,
-  };
+  });
 }
