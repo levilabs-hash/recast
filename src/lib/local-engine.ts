@@ -484,14 +484,19 @@ function paragraphKey(sourceText: string, sentence: string): string {
   const needle = sentence.slice(0, Math.min(48, sentence.length)).toLowerCase();
   const paragraphs = sourceText.split(/\n\s*\n/).map((item) => item.replace(/\s+/g, " ").trim());
   const match = paragraphs.find((paragraph) => paragraph.toLowerCase().includes(needle));
-  return (match ?? sentence).slice(0, 80).toLowerCase();
+  if (!match) return sentence.slice(0, 80).toLowerCase();
+  const sentenceCount = match.split(/(?<=[.!?])\s+/).filter((part) => part.trim().length >= 12).length;
+  if (match.length >= 400 || sentenceCount > 3) {
+    return sentence.slice(0, 80).toLowerCase();
+  }
+  return match.slice(0, 80).toLowerCase();
 }
 
 export function extractDistinctOpportunities(sourceText: string): Opportunity[] {
   const text = normalize(sourceText);
   const sentences = splitSentences(text);
-  const longSource = text.length >= 700 && sentences.length >= 8;
-  const max = longSource ? 5 : Math.min(2, sentences.length >= 4 ? 2 : 1);
+  const longSource = text.length >= 700 || sentences.length >= 8;
+  const max = longSource ? Math.min(5, Math.max(sentences.length, 1)) : Math.min(2, sentences.length >= 4 ? 2 : 1);
 
   const ranked = uniqueBy(
     sentences
