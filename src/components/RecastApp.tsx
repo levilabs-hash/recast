@@ -5,6 +5,12 @@ import { CopyButton } from "@/components/CopyButton";
 import { engineLabel, KIND_CLASS, KIND_LABEL } from "@/lib/labels";
 import { getPlatform, PLATFORMS, PLATFORM_IDS, type PlatformId } from "@/lib/platforms";
 import { SAMPLE_TRANSCRIPT } from "@/lib/sample";
+import {
+  normalizeAnalyzeOpportunities,
+  normalizeGeneratedPackages,
+  packageToOpportunity,
+  packageToTikTokOutput,
+} from "@/lib/opportunity-schema";
 import type {
   AnalysisEngine,
   AnalysisResult,
@@ -76,8 +82,12 @@ export function RecastApp() {
       if (!response.ok) {
         throw new Error(payload.error ?? "Analysis failed.");
       }
-      setOpportunities(payload.opportunities);
-      setSelectedIds(payload.opportunities.map((item) => item.id));
+      const list = normalizeAnalyzeOpportunities(payload);
+      if (list.length === 0) {
+        throw new Error("Analysis returned no opportunity objects.");
+      }
+      setOpportunities(list);
+      setSelectedIds(list.map((item) => item.id));
       setAnalysisEngine(payload.engine);
       setOutputs([]);
       setFilterId("all");
@@ -120,7 +130,18 @@ export function RecastApp() {
       if (!response.ok) {
         throw new Error(payload.error ?? "Generation failed.");
       }
-      setOutputs(payload.outputs ?? []);
+      const packages = normalizeGeneratedPackages(payload);
+      const incomingOutputs = payload.outputs ?? [];
+      if (packages.length > 0) {
+        const fromPackages = packages.map(packageToOpportunity);
+        setOpportunities(fromPackages);
+        setSelectedIds(fromPackages.map((item) => item.id));
+        const tiktokOutputs = packages.map(packageToTikTokOutput);
+        const otherOutputs = incomingOutputs.filter((item) => item.platform !== "tiktok");
+        setOutputs([...tiktokOutputs, ...otherOutputs]);
+      } else {
+        setOutputs(incomingOutputs);
+      }
       setGeneratedPlatforms(payload.platforms ?? selectedPlatforms);
       setGenerationEngine(payload.engine ?? "local");
       setFilterId("all");

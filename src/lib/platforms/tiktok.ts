@@ -4,6 +4,8 @@ import { cleanQuote, sourceClaim, sourceClauses, textKey } from "./draft";
 const LABEL_PREFIX =
   /^(the line that changes the piece:|the line i almost cut:|nobody wants to say this out loud:|contrarian:|how-to:|story:)\s*/i;
 const HOST_OPENER = /^today i'?m sitting\b/i;
+const INTERVIEWER_LINE =
+  /^(so how do you|what do people get wrong|you said |that's a hell of a swing|what does it look like|is that actually true|push on that|last one\b)/i;
 const LABEL_TITLES =
   /moment the idea became obvious|repeatable system|what people get wrong|creating content|content meant|meant constantly/i;
 const META_SPEECH =
@@ -50,13 +52,6 @@ function sourceSentences(sourceText: string): string[] {
     .filter((sentence) => sentence.length >= 12 && words(sentence).length >= 4);
 }
 
-function sharesIdea(sentence: string, idea: string): boolean {
-  const left = new Set(textKey(sentence).split(" ").filter((word) => word.length > 3));
-  const right = textKey(idea).split(" ").filter((word) => word.length > 3);
-  if (left.size === 0 || right.length === 0) return false;
-  return right.filter((word) => left.has(word)).length >= 2;
-}
-
 function completeFromSource(sourceText: string, excerpt: string): string[] {
   const sentences = sourceSentences(sourceText);
   const excerptClean = cleanQuote(excerpt).replace(/[….]{2,}$/g, "").trim();
@@ -76,7 +71,13 @@ function completeFromSource(sourceText: string, excerpt: string): string[] {
     });
   }
   if (index < 0) return excerptClean ? [excerptClean] : [];
-  return sentences.slice(index, index + 3);
+  const slice = sentences.slice(index, index + 4);
+  const kept: string[] = [];
+  for (const sentence of slice) {
+    if (kept.length > 0 && isTopicShift(sentence, slice[0])) break;
+    kept.push(sentence);
+  }
+  return kept.length > 0 ? kept : slice.slice(0, 3);
 }
 
 function sameLine(a: string, b: string): boolean {
@@ -91,7 +92,9 @@ function sameLine(a: string, b: string): boolean {
 
 function usableClauses(claim: string): string[] {
   return sourceClauses(claim).filter((clause) => {
-    if (HOST_OPENER.test(clause) || words(clause).length < 3) return false;
+    if (HOST_OPENER.test(clause) || INTERVIEWER_LINE.test(clause) || words(clause).length < 3) {
+      return false;
+    }
     if (/\bis:?$/i.test(clause) && words(clause).length <= 5) return false;
     if (META_SPEECH.test(clause)) return false;
     return true;
@@ -122,41 +125,8 @@ function firstQuestion(claim: string): string | null {
 
 function ideaFromSource(sourceText: string, excerpt: string): string {
   const claim = cleanQuote(excerpt);
-  const source = cleanQuote(sourceText);
   const parts = completeFromSource(sourceText, excerpt);
   if (!parts.some((part) => sameLine(part, claim)) && claim) parts.unshift(claim);
-
-  const mentionsClipTension =
-    /\b(?:good )?clips\b/i.test(claim) || /\btension\b/i.test(claim) || /\bhunting\b/i.test(claim);
-  if (mentionsClipTension && /\bclips\b/i.test(source) && /\btension\b/i.test(source)) {
-    const clipLine = source.match(/[^.?!]*hunting for (?:good )?clips[^.?!]*[.?!]/i)?.[0];
-    const tensionLine = source.match(/[^.?!]*(?:look for tension|hunting for tension)[^.?!]*[.?!]/i)?.[0];
-    if (clipLine && !parts.some((part) => sameLine(part, clipLine))) parts.push(clipLine);
-    if (tensionLine && !parts.some((part) => sameLine(part, tensionLine))) parts.push(tensionLine);
-  }
-
-  const isntIts = source.match(/\bisn'?t to ([^.]+)\.\s*It'?s to ([^.]+)\./i);
-  if (isntIts && /\b(goal|nothing|valuable moments|already there)\b/i.test(claim)) {
-    parts.push(isntIts[0]);
-  }
-
-  if (/\b(?:one-person newsletter|content operation|without hiring)\b/i.test(claim)) {
-    const week = source.match(/[^.?!]*one long piece a week[^.?!]*[.?!]/i)?.[0];
-    const rest = source.match(/[^.?!]*everything else is recast[^.?!]*[.?!]/i)?.[0];
-    if (week && !parts.some((part) => sameLine(part, week))) parts.push(week);
-    if (rest && !parts.some((part) => sameLine(part, rest))) parts.push(rest);
-  }
-
-  if (/\b(busy|progress|important task|fill(?:ing|ed)? the day)\b/i.test(claim)) {
-    const busy = source.match(/[^.?!]*\bbusy\b[^.?!]*[.?!]/i)?.[0];
-    const progress = source.match(/[^.?!]*\b(meaningful progress|progress)\b[^.?!]*[.?!]/i)?.[0];
-    const task = source.match(/[^.?!]*\b(one important task|one task)\b[^.?!]*[.?!]/i)?.[0];
-    const win = source.match(/[^.?!]*\b(day successful|successful day|make the day)\b[^.?!]*[.?!]/i)?.[0];
-    for (const line of [busy, progress, task, win]) {
-      if (line && !parts.some((part) => sameLine(part, line))) parts.push(line);
-    }
-  }
-
   return parts.join(" ");
 }
 
@@ -172,6 +142,9 @@ function isCompletePhrase(text: string): boolean {
 function punchyFromIdea(claim: string): string | null {
   if (/\bbusy\b/i.test(claim) && /\b(progress|meaningful)\b/i.test(claim)) {
     return "Busy isn't the same as progress.";
+  }
+  if (/\bfill every hour\b/i.test(claim) && /\b(tasks?|productive)\b/i.test(claim)) {
+    return "Filling every hour is not progress.";
   }
   if (/\bfill(?:ing|ed)? the day\b/i.test(claim) && /\b(one (important )?task|important task)\b/i.test(claim)) {
     return "Stop filling the day. Choose one important task.";
@@ -267,7 +240,11 @@ function openingHook(opportunity: Opportunity, idea: string): string {
     .map((clause) => clause.replace(/^[.]+|[.]+$/g, "").trim())
     .filter((clause) => {
       const count = words(clause).length;
-      return count >= 4 && count <= 12 && !isCategoryName(clause) && !sameLine(clause, opportunity.title);
+      if (count < 4 || count > 12 || isCategoryName(clause) || sameLine(clause, opportunity.title)) {
+        return false;
+      }
+      if ((clause.match(/,/g) ?? []).length >= 2 && count <= 8) return false;
+      return true;
     })
     .sort((a, b) => a.length - b.length)[0];
   if (punchy) return acceptHook(punchy, opportunity);
@@ -392,13 +369,65 @@ function spokenBeats(hook: string, idea: string, sourceText: string): string[] {
   return beats.slice(0, 3);
 }
 
+function isTopicShift(sentence: string, seed: string): boolean {
+  if (
+    /^(then there is|that's a hell of a swing|what do people get wrong|so how do you|you said |host:|that's the part nobody believes|if someone listening|today i'?m sitting|creators have the same problem|four assets from one recording sounds)\b/i.test(
+      sentence,
+    )
+  ) {
+    return true;
+  }
+  if (/\?$/.test(sentence) && !ideaThemeFromText(sentence)) {
+    return true;
+  }
+  const seedTheme = ideaThemeFromText(seed);
+  const nextTheme = ideaThemeFromText(sentence);
+  return Boolean(seedTheme && nextTheme && seedTheme !== nextTheme);
+}
+
+function ideaThemeFromText(text: string): string | null {
+  const value = text.toLowerCase();
+  if (
+    /\$|undercharg|packaging problem|confidence problem|worth \$|close rate|easier to buy|14-day recasting|content strategy calls/.test(
+      value,
+    )
+  ) {
+    return "pricing";
+  }
+  if (
+    /hunting for|good clips|hunting for tension|look for tension|live on every platform|only sounds smart/.test(
+      value,
+    )
+  ) {
+    return "tension";
+  }
+  if (/busy|meaningful week|fill every hour|one important task|full calendar/.test(value)) {
+    return "progress";
+  }
+  if (/30 posts|atomize|selection is the job|opportunities first|beige content/.test(value)) {
+    return "selection";
+  }
+  if (/47 public|four assets|one long piece a week|almost four/.test(value)) return "yield";
+  if (/archive is not|behind on recast|circle three moments|it's inventory|is inventory/.test(value)) {
+    return "inventory";
+  }
+  if (/28-second|four formats|almost cut|1\.2 million|imposter syndrome/.test(value)) return "oneline";
+  return null;
+}
+
 function passageAround(sourceText: string, idea: string): string[] {
   const sentences = sourceSentences(sourceText);
   const seed = completeFromSource(sourceText, idea);
   if (seed.length === 0) return sentences.slice(0, 4);
   const start = sentences.findIndex((sentence) => sameLine(sentence, seed[0]));
   if (start < 0) return seed;
-  return sentences.slice(start, start + 7);
+  const slice = sentences.slice(start, start + 5);
+  const kept: string[] = [];
+  for (const sentence of slice) {
+    if (kept.length > 0 && isTopicShift(sentence, slice[0])) break;
+    kept.push(sentence);
+  }
+  return kept.length > 0 ? kept : slice.slice(0, 4);
 }
 
 function repeatsHook(text: string, hook: string): boolean {
@@ -413,7 +442,9 @@ function buildSpokenScript(hook: string, beats: string[], idea: string, sourceTe
   const middle: string[] = [];
 
   function take(text: string | null | undefined) {
-    if (!text || META_SPEECH.test(text) || HOST_OPENER.test(text)) return;
+    if (!text || META_SPEECH.test(text) || HOST_OPENER.test(text) || INTERVIEWER_LINE.test(text)) {
+      return;
+    }
     if (repeatsHook(text, hook)) return;
     if (middle.some((existing) => sameLine(existing, text))) return;
     if (words(text).length < 5) return;
@@ -427,14 +458,13 @@ function buildSpokenScript(hook: string, beats: string[], idea: string, sourceTe
   }
 
   if (middle.length < 2) {
-    for (const sentence of sourceSentences(sourceText)) {
+    for (const sentence of passageAround(sourceText, idea)) {
       if (middle.length >= 3) break;
-      if (!sharesIdea(sentence, idea)) continue;
       take(sentence);
     }
   }
 
-  const trimmed = middle.slice(0, 4);
+  const trimmed = middle.slice(0, 5);
   const opening = endSentence(hook);
   const first = trimmed[0];
   const rest = trimmed.slice(1);
@@ -443,12 +473,12 @@ function buildSpokenScript(hook: string, beats: string[], idea: string, sourceTe
   const count = words(script).length;
   if (count >= 55 && count <= 110) return script;
   if (count < 55) {
-    const extra = sourceSentences(sourceText).filter(
-      (sentence) => !repeatsHook(sentence, hook) && sharesIdea(sentence, idea) && !trimmed.some((item) => sameLine(item, sentence)),
+    const extra = passageAround(sourceText, idea).filter(
+      (sentence) => !repeatsHook(sentence, hook) && !trimmed.some((item) => sameLine(item, sentence)),
     );
     const filled = [...trimmed];
     for (const sentence of extra) {
-      if (words([opening, ...filled].join(" ")).length >= 60) break;
+      if (words([opening, ...filled].join(" ")).length >= 70) break;
       filled.push(endSentence(sentence));
     }
     const next = filled[0];
@@ -471,6 +501,9 @@ function viewerCta(idea: string, hook: string): string {
   }
   if (/\bfill(?:ing|ed)? the day\b/i.test(claim) && /\btasks?\b/i.test(claim)) {
     return "What's the one task you would keep if you cleared the rest? Comment it.";
+  }
+  if (/\bfill every hour\b/i.test(claim) || (/\btwenty things\b/i.test(claim) && /\bmattered\b/i.test(claim))) {
+    return "What would you drop if the day only counted one task? Comment it.";
   }
 
   if (
@@ -660,7 +693,7 @@ function finalizeTikTok(
 ): Record<string, string> {
   let hook = stripLabels(fields.hook);
   let spokenScript = stripLabels(fields.spokenScript);
-  let onScreenText = stripLabels(fields.onScreenText).replace(/^\d+\.\s*/gm, "").trim();
+  let onScreenText = stripLabels(fields.onScreenText).replace(/^\d+\.\s+(?=[A-Za-z])/gm, "").trim();
   let cta = stripLabels(fields.cta);
 
   if (sameLine(hook, opportunity.title) || isCategoryName(hook)) {

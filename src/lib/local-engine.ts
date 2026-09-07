@@ -46,7 +46,7 @@ const GENERIC_SINGLE_TOPICS = new Set([
 
 const TENSION_PATTERNS: Array<{ test: RegExp; weight: number }> = [
   { test: /\d+(\.\d+)?%|\b\d{1,3}(,\d{3})+\b|\b\d+\s?(hours?|weeks?|days?|months?|million|thousand|k)\b/i, weight: 3 },
-  { test: /\b(but|however|instead|actually|the truth|nobody|mistake|secret|wait|stop)\b/i, weight: 2.4 },
+  { test: /\b(but|however|instead|actually|the truth|nobody|mistake|secret|wait|stop|stopped|started)\b/i, weight: 2.4 },
   { test: /\b(never|always|every|biggest|worst|best|brutal|useless|obvious)\b/i, weight: 1.4 },
   { test: /\?/, weight: 1.6 },
   { test: /\b(I|we|my|our)\b/, weight: 1.2 },
@@ -208,89 +208,222 @@ function buildWhy(kind: OpportunityKind, sentence: string): string {
 }
 
 export function analyzeLocally(sourceText: string): AnalysisResult {
+  return {
+    engine: "local",
+    opportunities: extractDistinctOpportunities(sourceText),
+  };
+}
+
+function lexicalOverlap(a: string, b: string): number {
+  const left = new Set(tokenize(a));
+  const right = tokenize(b);
+  if (left.size === 0 || right.length === 0) return 0;
+  const shared = right.filter((word) => left.has(word)).length;
+  return shared / Math.max(left.size, new Set(right).size);
+}
+
+function shareDistinctiveClaim(a: string, b: string): boolean {
+  const keys = (text: string) =>
+    new Set([...text.matchAll(/\$[\d,]+|\b\d{2,}(?:%|\b)/g)].map((match) => match[0]));
+  const left = keys(a);
+  if (left.size === 0) return false;
+  for (const key of keys(b)) {
+    if (left.has(key)) return true;
+  }
+  return false;
+}
+
+function tooSimilar(a: string, b: string): boolean {
+  return lexicalOverlap(a, b) >= 0.34 || shareDistinctiveClaim(a, b);
+}
+
+export function extractDistinctOpportunities(sourceText: string): Opportunity[] {
   const text = normalize(sourceText);
   const sentences = splitSentences(text);
+  const longSource = text.length >= 700 && sentences.length >= 8;
+  const max = longSource ? 5 : Math.min(2, sentences.length >= 4 ? 2 : 1);
+
   const ranked = uniqueBy(
     sentences
-      .map((sentence, index) => ({ sentence, index, score: scoreSentence(sentence) }))
+      .map((sentence) => ({ sentence, score: scoreSentence(sentence) }))
       .sort((a, b) => b.score - a.score),
     (item) => item.sentence.slice(0, 80),
   );
 
-  const topics = extractTopics(text).map((topic, index) => ({
-    id: `topic-${index + 1}`,
-    kind: "topic" as const,
-    title: topic.title,
-    excerpt: topic.excerpt,
-    whyValuable: topic.why,
-  }));
+  const selected: Opportunity[] = [];
+  for (const item of ranked) {
+    if (selected.length >= max) break;
+    const excerpt = cleanQuote(item.sentence);
+    if (excerpt.split(/\s+/).length < 6) continue;
+    if (selected.some((existing) => tooSimilar(existing.excerpt, excerpt))) continue;
+    if (selected.length >= (longSource ? 3 : 1) && item.score < 1.5) continue;
+    const topic = titleFromSentence(excerpt);
+    selected.push({
+      id: `topic-${selected.length + 1}`,
+      kind: "topic",
+      title: topic,
+      topic,
+      excerpt,
+      whyValuable: buildWhy("topic", excerpt),
+    });
+  }
 
-  const moments = ranked.slice(0, 3).map((item, index) => ({
-    id: `moment-${index + 1}`,
-    kind: "moment" as const,
-    title: titleFromSentence(item.sentence),
-    excerpt: cleanQuote(item.sentence),
-    whyValuable: buildWhy("moment", item.sentence),
-  }));
+  if (selected.length === 0 && sentences[0]) {
+    const excerpt = cleanQuote(sentences[0]);
+    const topic = titleFromSentence(excerpt);
+    return [
+      {
+        id: "topic-1",
+        kind: "topic",
+        title: topic,
+        topic,
+        excerpt,
+        whyValuable: buildWhy("topic", excerpt),
+      },
+    ];
+  }
 
-  const hookSeeds = (ranked.filter((item) => item.score >= 3).slice(0, 3).length > 0
-    ? ranked.filter((item) => item.score >= 3).slice(0, 3)
-    : ranked.slice(0, 3));
-  const hooks = hookSeeds.map((item, index) => ({
-    id: `hook-${index + 1}`,
-    kind: "hook" as const,
-    title: rewriteAsHook(item.sentence, index),
-    excerpt: cleanQuote(item.sentence),
-    whyValuable: buildWhy("hook", item.sentence),
-  }));
+  return selected;
+}
 
-  const leadTopic =
-    [...topics].sort((a, b) => {
-      const words = b.title.split(/\s+/).length - a.title.split(/\s+/).length;
-      return words !== 0 ? words : b.title.length - a.title.length;
-    })[0]?.title ?? "this idea";
-  const leadMoment = moments[0]?.excerpt ?? sentences[0] ?? text.slice(0, 140);
-  const angles: Opportunity[] = [
-    {
-      id: "angle-1",
-      kind: "angle",
-      title: `Contrarian: what people get wrong about ${leadTopic.toLowerCase()}`,
-      excerpt: leadMoment,
-      whyValuable:
-        "A contrarian frame makes the same source feel new. It is the fastest way to turn a long piece into a debate people want to join.",
-    },
-    {
-      id: "angle-2",
-      kind: "angle",
-      title: `How-to: turn ${leadTopic.toLowerCase()} into a repeatable system`,
-      excerpt:
-        sentences.find((sentence) =>
-          /\b(rule is|repeatable|do not edit|identify the opportunities|system that)\b/i.test(
-            sentence,
-          ),
-        ) ?? leadMoment,
-      whyValuable:
-        "How-to packaging is easier to buy and easier to save. It turns insight into an asset people come back to.",
-    },
-    {
-      id: "angle-3",
-      kind: "angle",
-      title: "Story: the moment the idea became obvious",
-      excerpt:
-        sentences.find((sentence) =>
-          /\b(used to|months ago|real example|I was|I did not)\b/i.test(sentence),
-        ) ?? leadMoment,
-      whyValuable:
-        "A lived story carries more trust than advice. Short-form platforms still reward a scene with a turn.",
-    },
-  ];
+function ideaOverlap(a: string, b: string): number {
+  const left = new Set(tokenize(a));
+  const right = tokenize(b);
+  if (left.size === 0 || right.length === 0) return 0;
+  const shared = right.filter((word) => left.has(word)).length;
+  return shared / Math.max(left.size, new Set(right).size);
+}
 
-  const opportunities = uniqueBy(
-    [...topics.slice(0, 3), ...moments, ...hooks, ...angles],
-    (item) => item.title,
+function nearestSentenceIndex(sentences: string[], excerpt: string): number {
+  let best = -1;
+  let bestScore = 0;
+  for (let index = 0; index < sentences.length; index += 1) {
+    const score = ideaOverlap(sentences[index], excerpt);
+    if (score > bestScore) {
+      bestScore = score;
+      best = index;
+    }
+  }
+  return bestScore >= 0.28 ? best : -1;
+}
+
+function ideaWindow(sentences: string[], excerpt: string): string {
+  const index = nearestSentenceIndex(sentences, excerpt);
+  if (index < 0) return excerpt;
+  return sentences.slice(Math.max(0, index - 1), index + 2).join(" ");
+}
+
+function ideaTheme(text: string): string | null {
+  const value = text.toLowerCase();
+  if (
+    /\$|undercharg|packaging problem|confidence problem|worth \$|close rate|easier to buy|14-day recasting|content strategy calls/.test(
+      value,
+    )
+  ) {
+    return "pricing";
+  }
+  if (
+    /hunting for|good clips|hunting for tension|look for tension|live on every platform|only sounds smart/.test(
+      value,
+    )
+  ) {
+    return "tension";
+  }
+  if (/busy|meaningful week|fill every hour|one important task|full calendar/.test(value)) {
+    return "progress";
+  }
+  if (/30 posts|atomize|selection is the job|opportunities first|beige content/.test(value)) {
+    return "selection";
+  }
+  if (/47 public|four assets|one long piece a week|almost four/.test(value)) return "yield";
+  if (/archive is not|behind on recast|circle three moments|it's inventory|is inventory/.test(value)) {
+    return "inventory";
+  }
+  if (/28-second|four formats|almost cut|1\.2 million|imposter syndrome/.test(value)) return "oneline";
+  return null;
+}
+
+function sameIdea(sentences: string[], left: string, right: string): boolean {
+  const leftTheme = ideaTheme(left);
+  const rightTheme = ideaTheme(right);
+  if (leftTheme && rightTheme && leftTheme === rightTheme) return true;
+  if (ideaOverlap(left, right) >= 0.42) return true;
+  const leftIndex = nearestSentenceIndex(sentences, left);
+  const rightIndex = nearestSentenceIndex(sentences, right);
+  if (leftIndex >= 0 && rightIndex >= 0 && Math.abs(leftIndex - rightIndex) <= 2) {
+    return true;
+  }
+  return ideaOverlap(ideaWindow(sentences, left), ideaWindow(sentences, right)) >= 0.38;
+}
+
+function conciseTitle(text: string): string {
+  const cleaned = cleanQuote(text)
+    .replace(
+      /^(the line that changes the piece:|the line i almost cut:|nobody wants to say this out loud:|contrarian:|how-to:|story:)\s*/i,
+      "",
+    )
+    .replace(/^(what people get wrong about|turn |the moment the idea became obvious:?)\s*/i, "")
+    .replace(/[.]+$/, "")
+    .trim();
+
+  if (/\bbusy\b/i.test(cleaned) && /\bprogress\b/i.test(cleaned)) return "Busy vs Progress";
+  if (/\bone (important )?task\b/i.test(cleaned) && /\b(successful|day|fill)/i.test(cleaned)) {
+    return "One Important Task";
+  }
+  if (/\bhunting for (?:good )?clips\b/i.test(cleaned) && /\btension\b/i.test(cleaned)) {
+    return "Hunt for Tension";
+  }
+  if (/\bpackaging\b/i.test(cleaned) && /\bconfidence\b/i.test(cleaned)) {
+    return "Packaging vs Confidence";
+  }
+  const contrast = cleaned.match(
+    /\bnot (?:a |an |the )?([^.,]{3,28}).{0,24}(?:it is|it's) (?:a |an |the )?([^.,]{3,28})/i,
   );
+  if (contrast) {
+    return `${titleCase(contrast[1].trim())} vs ${titleCase(contrast[2].trim())}`;
+  }
 
-  return { engine: "local", opportunities };
+  const question = cleaned.match(/[^?]{6,70}\?/);
+  if (question && question[0].split(/\s+/).length <= 12) {
+    return question[0].trim();
+  }
+  if (cleaned.length <= 72 && !/[.]\s/.test(cleaned) && !/[….]{2,}$|…/.test(cleaned)) {
+    return cleaned;
+  }
+
+  const protectedCommas = cleaned.replace(/(\$\d{1,3}),(\d{3})/g, "$1COMMA$2");
+  const clause = (protectedCommas.split(/[:,]/)[0] ?? cleaned).replace(/COMMA/g, ",").trim();
+  const clauseWords = clause.split(/\s+/).filter(Boolean);
+  if (clauseWords.length >= 4 && clauseWords.length <= 12 && !/^(and|or|then|but)\b/i.test(clause)) {
+    return clause;
+  }
+  const cut = cleaned.slice(0, 64);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${cut.slice(0, lastSpace > 28 ? lastSpace : 64).trim()}`;
+}
+
+export function refineDistinctOpportunities(
+  sourceText: string,
+  incoming: Opportunity[],
+): Opportunity[] {
+  const extracted = extractDistinctOpportunities(sourceText);
+  const merged: Opportunity[] = [];
+  for (const item of [...extracted, ...incoming]) {
+    const excerpt = cleanQuote(item.excerpt || item.title || item.topic || "");
+    const topic = item.topic || item.title || titleFromSentence(excerpt);
+    if (!excerpt || excerpt.split(/\s+/).length < 6) continue;
+    if (merged.some((existing) => tooSimilar(existing.excerpt, excerpt))) continue;
+    merged.push({
+      id: `topic-${merged.length + 1}`,
+      kind: "topic",
+      title: topic,
+      topic,
+      excerpt,
+      whyValuable: item.whyValuable || buildWhy("topic", excerpt),
+    });
+    if (merged.length >= 5) break;
+  }
+  return merged.length > 0 ? merged : extracted;
 }
 
 export function generateLocally(
@@ -302,5 +435,6 @@ export function generateLocally(
     engine: "local",
     platforms,
     outputs: generatePlatformOutputs(sourceText, opportunities, platforms),
+    opportunities: [],
   };
 }

@@ -12,6 +12,16 @@ export interface Opportunity {
   title: string;
   excerpt: string;
   whyValuable: string;
+  topic?: string;
+}
+
+export interface OpportunityPackage {
+  id: string;
+  topic: string;
+  hook: string;
+  spokenScript: string;
+  onScreenText: string[];
+  cta: string;
 }
 
 export interface AnalysisResult {
@@ -31,6 +41,7 @@ export interface GenerationResult {
   engine: AnalysisEngine;
   platforms: PlatformId[];
   outputs: GeneratedPiece[];
+  opportunities: OpportunityPackage[];
 }
 
 export interface AnalyzeRequest {

@@ -1,10 +1,16 @@
+import {
+  ANALYZE_OPPORTUNITIES_SCHEMA,
+  GENERATE_OPPORTUNITIES_SCHEMA,
+  normalizeAnalyzeOpportunities,
+  normalizeGeneratedPackages,
+  packageToTikTokOutput,
+} from "./opportunity-schema";
 import { getPlatform, isPlatformId, type PlatformId } from "./platforms";
 import type {
   AnalysisResult,
   GeneratedPiece,
   GenerationResult,
   Opportunity,
-  OpportunityKind,
 } from "./types";
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
@@ -39,7 +45,11 @@ function parseJsonContent(raw: string): unknown {
   return JSON.parse(stripped);
 }
 
-async function completeJson(system: string, user: string): Promise<unknown> {
+async function completeJson(
+  system: string,
+  user: string,
+  schema?: Record<string, unknown>,
+): Promise<unknown> {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not configured.");
@@ -54,7 +64,16 @@ async function completeJson(system: string, user: string): Promise<unknown> {
     body: JSON.stringify({
       model: MODEL,
       temperature: 0.4,
-      response_format: { type: "json_object" },
+      response_format: schema
+        ? {
+            type: "json_schema",
+            json_schema: {
+              name: "recast_opportunities",
+              strict: true,
+              schema,
+            },
+          }
+        : { type: "json_object" },
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
@@ -75,50 +94,41 @@ async function completeJson(system: string, user: string): Promise<unknown> {
   return parseJsonContent(content);
 }
 
-const KINDS: OpportunityKind[] = ["topic", "moment", "hook", "angle"];
-
-function asOpportunity(value: unknown, index: number): Opportunity | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  const kind = KINDS.includes(record.kind as OpportunityKind)
-    ? (record.kind as OpportunityKind)
-    : null;
-  const title = typeof record.title === "string" ? record.title.trim() : "";
-  const excerpt = typeof record.excerpt === "string" ? record.excerpt.trim() : "";
-  const whyValuable =
-    typeof record.whyValuable === "string" ? record.whyValuable.trim() : "";
-  if (!kind || !title || !excerpt || !whyValuable) return null;
-  const id =
-    typeof record.id === "string" && record.id.trim()
-      ? record.id.trim()
-      : `${kind}-${index + 1}`;
-  return { id, kind, title, excerpt, whyValuable };
-}
-
 export async function analyzeWithOpenAI(sourceText: string): Promise<AnalysisResult> {
-  const data = await completeJson(
-    [
-      "You are RECAST, an AI content operations engine for creators.",
-      "Analyze long-form source material and find reusable content opportunities.",
-      "Return JSON only with this shape:",
-      '{ "opportunities": [{ "id": "topic-1", "kind": "topic|moment|hook|angle", "title": "", "excerpt": "", "whyValuable": "" }] }',
-      "Rules:",
-      "- Use only information present in the source. Do not invent facts, stats, or quotes.",
-      "- Include 2-3 topics, 3-4 high-value moments, 2-3 hooks, and 2-3 content angles.",
-      "- excerpt must be a close paraphrase or a short quote from the source.",
-      "- whyValuable must explain why this is worth publishing, in one or two sentences.",
-      "- Titles should be specific and usable as card headlines.",
-    ].join("\n"),
-    `Source content:\n\n${sourceText}`,
-  );
+  let data: unknown;
+  try {
+    data = await completeJson(
+      [
+        "You are RECAST, an AI content operations engine for creators.",
+        "Analyze long-form source material and return DISTINCT reusable content opportunities.",
+        "Return JSON with an opportunities ARRAY. Never return one object that mixes several ideas.",
+        "Each array item is one independent idea.",
+        "Rules:",
+        "- Find the strongest independent ideas in the source.",
+        "- Separate genuinely different ideas. Do not rephrase the same idea twice.",
+        "- Ground every opportunity in the source. Do not invent claims.",
+        "- Return 3-5 opportunities when the source contains enough distinct material.",
+        "- Return fewer only when the source genuinely lacks enough distinct ideas.",
+        "- topic: a concise label for that one idea.",
+        "- excerpt: a short quote or close paraphrase from the source for that idea only.",
+        "- whyValuable: one or two sentences on why this idea can stand alone.",
+      ].join("\n"),
+      `Source content:\n\n${sourceText}`,
+      ANALYZE_OPPORTUNITIES_SCHEMA,
+    );
+  } catch {
+    data = await completeJson(
+      [
+        "You are RECAST. Return JSON only.",
+        '{ "opportunities": [{ "topic": "", "excerpt": "", "whyValuable": "" }] }',
+        "opportunities MUST be an array of 3-5 distinct source-grounded ideas when the source is long enough.",
+        "Never hide multiple ideas inside one object.",
+      ].join("\n"),
+      `Source content:\n\n${sourceText}`,
+    );
+  }
 
-  const record = data as { opportunities?: unknown };
-  const list = Array.isArray(record.opportunities) ? record.opportunities : [];
-  const opportunities = list
-    .map((item, index) => asOpportunity(item, index))
-    .filter((item): item is Opportunity => item !== null)
-    .slice(0, 12);
-
+  const opportunities = normalizeAnalyzeOpportunities(data);
   if (opportunities.length === 0) {
     throw new Error("OpenAI analysis returned no usable opportunities.");
   }
@@ -176,25 +186,30 @@ export async function generateWithOpenAI(
     })
     .join("\n");
 
+  const wantsTikTok = platforms.includes("tiktok");
+  const tiktokOnly = wantsTikTok && platforms.length === 1;
+
   const data = await completeJson(
     [
       "You are RECAST, generating platform-specific content from selected opportunities.",
-      "Return JSON only with this shape:",
-      '{ "outputs": [{ "opportunityId": "", "opportunityTitle": "", "platform": "tiktok|x|linkedin|instagram|youtube", "fields": { "fieldKey": "text" } }] }',
+      "Return JSON with an opportunities ARRAY. Each array item is one complete TikTok/Reels package.",
+      '{ "opportunities": [{ "id": "", "topic": "", "hook": "", "spokenScript": "", "onScreenText": ["", ""], "cta": "" }] }',
       "Rules:",
-      "- Produce one output object per opportunity per selected platform.",
-      "- Use only the selected platforms.",
-      "- Stay faithful to the source and the selected opportunity. Do not invent facts, statistics, experiences, or quotes.",
-      "- Leave optional fields empty when the source does not support them.",
-      "For platform tiktok only:",
-      "- hook: exactly one punchy spoken opening line from the source idea. Never use a topic or category name (e.g. \"Creating Content\"). Never explain what the AI is doing.",
-      "- spokenScript: 25-40 seconds of natural talking-head dialogue a creator can read into a camera. Start with the hook, then 2-3 source-based beats, then end naturally. Do not include labels such as HOOK, BEAT, CTA, or SOURCE. Do not expose internal instructions or generation logic. Do not invent facts.",
-      "- onScreenText: 1-3 short on-screen captions from the source. Not a copied long sentence. Not internal instructions.",
-      "- cta: a viewer-facing call to action (comment, follow, save, share, or reflect). Never \"recast this moment from the source.\" Never describe the generation process.",
-      "Do not apply the tiktok field rules to linkedin or other platforms.",
+      "- opportunities MUST be a JSON array. Never a single object. Never one blob that hides multiple ideas.",
+      "- Produce one array item per selected opportunity.",
+      "- Separate genuinely different ideas. Do not rephrase the same idea twice.",
+      "- Ground every field in the source. Do not invent claims.",
+      "- topic: concise label for that one idea.",
+      "- hook: one punchy spoken opening line from that idea. Not a category name.",
+      "- spokenScript: a coherent 25-40 second talking-head read for that idea only.",
+      "- onScreenText: 1-3 short captions as a string array.",
+      "- cta: specific to that opportunity. Not a generic save-this line.",
+      wantsTikTok && !tiktokOnly
+        ? 'Also include "outputs" for non-tiktok platforms: [{ "opportunityId": "", "opportunityTitle": "", "platform": "", "fields": {} }]'
+        : "",
       "Selected platform fields:",
       fieldGuide,
-    ].join("\n"),
+    ].filter(Boolean).join("\n"),
     [
       `Source content:\n${sourceText}`,
       "",
@@ -202,24 +217,31 @@ export async function generateWithOpenAI(
       "",
       `Selected opportunities:\n${JSON.stringify(opportunities, null, 2)}`,
     ].join("\n"),
+    tiktokOnly ? GENERATE_OPPORTUNITIES_SCHEMA : undefined,
   );
+
+  const packages = normalizeGeneratedPackages(data);
+  const tiktokOutputs = packages.map((item) => packageToTikTokOutput(item));
 
   const record = data as { outputs?: unknown };
   const list = Array.isArray(record.outputs) ? record.outputs : [];
-  const outputs = opportunities.flatMap((opportunity) =>
-    platforms.map((platform) => {
-      const match = list.find((item) => {
-        if (!item || typeof item !== "object") return false;
-        const row = item as { opportunityId?: string; platform?: string };
-        return row.opportunityId === opportunity.id && isPlatformId(row.platform) && row.platform === platform;
-      });
-      return asGeneratedPiece(match, opportunity, platform);
-    }),
+  const otherOutputs = opportunities.flatMap((opportunity) =>
+    platforms
+      .filter((platform) => platform !== "tiktok")
+      .map((platform) => {
+        const match = list.find((item) => {
+          if (!item || typeof item !== "object") return false;
+          const row = item as { opportunityId?: string; platform?: string };
+          return row.opportunityId === opportunity.id && isPlatformId(row.platform) && row.platform === platform;
+        });
+        return asGeneratedPiece(match, opportunity, platform);
+      }),
   ).filter((item): item is GeneratedPiece => item !== null);
 
+  const outputs = [...tiktokOutputs, ...otherOutputs];
   if (outputs.length === 0) {
     throw new Error("OpenAI generation returned no usable outputs.");
   }
 
-  return { engine: "openai", platforms, outputs };
+  return { engine: "openai", platforms, outputs, opportunities: packages };
 }

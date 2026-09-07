@@ -1,9 +1,13 @@
-import { analyzeLocally, generateLocally } from "./local-engine";
+import { analyzeLocally, extractDistinctOpportunities, generateLocally, refineDistinctOpportunities } from "./local-engine";
 import {
   analyzeWithOpenAI,
   generateWithOpenAI,
   isOpenAIConfigured,
 } from "./openai";
+import {
+  normalizeAnalyzeOpportunities,
+  outputsToPackages,
+} from "./opportunity-schema";
 import { generateForPlatform, normalizePlatforms, type PlatformId } from "./platforms";
 import type { AnalysisResult, GeneratedPiece, GenerationResult, Opportunity } from "./types";
 
@@ -25,14 +29,35 @@ export function validateSourceText(sourceText: unknown): string {
 }
 
 export async function analyzeContent(sourceText: string): Promise<AnalysisResult> {
+  let result: AnalysisResult;
   if (isOpenAIConfigured()) {
     try {
-      return await analyzeWithOpenAI(sourceText);
+      result = await analyzeWithOpenAI(sourceText);
     } catch (error) {
       console.error("OpenAI analysis failed, using local engine.", error);
+      result = analyzeLocally(sourceText);
     }
+  } else {
+    result = analyzeLocally(sourceText);
   }
-  return analyzeLocally(sourceText);
+
+  const parsed = normalizeAnalyzeOpportunities({ opportunities: result.opportunities });
+  return {
+    ...result,
+    opportunities: refineDistinctOpportunities(
+      sourceText,
+      parsed.length > 0 ? parsed : result.opportunities,
+    ),
+  };
+}
+
+function resolveOpportunities(sourceText: string, incoming: Opportunity[]): Opportunity[] {
+  const parsed = normalizeAnalyzeOpportunities({ opportunities: incoming });
+  const extracted = extractDistinctOpportunities(sourceText);
+  if (parsed.length <= 1 && extracted.length >= 2 && sourceText.length >= 500) {
+    return extracted;
+  }
+  return parsed.length > 0 ? parsed : extracted;
 }
 
 function applyTikTokGenerator(
@@ -41,7 +66,10 @@ function applyTikTokGenerator(
   result: GenerationResult,
 ): GenerationResult {
   if (!result.platforms.includes("tiktok")) {
-    return result;
+    return {
+      ...result,
+      opportunities: result.opportunities ?? [],
+    };
   }
 
   const byId = new Map(opportunities.map((item) => [item.id, item]));
@@ -88,7 +116,11 @@ function applyTikTokGenerator(
     });
   }
 
-  return { ...result, outputs };
+  return {
+    ...result,
+    outputs,
+    opportunities: outputsToPackages(outputs),
+  };
 }
 
 export async function generateContent(
@@ -96,7 +128,8 @@ export async function generateContent(
   opportunities: Opportunity[],
   platforms: PlatformId[] = normalizePlatforms(undefined),
 ): Promise<GenerationResult> {
-  if (opportunities.length === 0) {
+  const resolved = resolveOpportunities(sourceText, opportunities);
+  if (resolved.length === 0) {
     throw new Error("Select at least one opportunity to generate content.");
   }
   if (platforms.length === 0) {
@@ -106,14 +139,14 @@ export async function generateContent(
   let result: GenerationResult;
   if (isOpenAIConfigured()) {
     try {
-      result = await generateWithOpenAI(sourceText, opportunities, platforms);
+      result = await generateWithOpenAI(sourceText, resolved, platforms);
     } catch (error) {
       console.error("OpenAI generation failed, using local engine.", error);
-      result = generateLocally(sourceText, opportunities, platforms);
+      result = generateLocally(sourceText, resolved, platforms);
     }
   } else {
-    result = generateLocally(sourceText, opportunities, platforms);
+    result = generateLocally(sourceText, resolved, platforms);
   }
 
-  return applyTikTokGenerator(sourceText, opportunities, result);
+  return applyTikTokGenerator(sourceText, resolved, result);
 }
