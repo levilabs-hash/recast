@@ -188,11 +188,10 @@ function isolateIdea(sourceText: string, opportunity: Opportunity): string[] {
 
   if (best && bestScore >= 0.4) {
     const sentences = sourceSentences(best);
-    const tooBroad =
-      paragraphs.length <= 1 || sentences.length > 7 || best.length > 900;
-    if (!tooBroad && sentences.length > 0) return sentences;
     const focused = sentences.filter((sentence) => belongsToSeed(sentence, seed));
     if (focused.length > 0) return uniqueSentences(focused);
+    const tooBroad = paragraphs.length <= 1 || sentences.length > 7 || best.length > 900;
+    if (!tooBroad && sentences.length > 0) return sentences;
   }
 
   const fromAll = sourceSentences(sourceText).filter((sentence) => belongsToSeed(sentence, seed));
@@ -568,85 +567,172 @@ function buildSpokenScript(hook: string, ideaSentences: string[]): string {
 const BANNED_CTA =
   /recast this moment|last recording, save it|follow for more recasts|generation|transcript|prompt|internal|ai generated|do not /i;
 
-function viewerCta(idea: string, hook: string): string {
-  const claim = idea;
+type CtaTheme =
+  | "priority"
+  | "customer"
+  | "tension"
+  | "rejection"
+  | "motivation"
+  | "imagined"
+  | "pricing"
+  | "almostcut"
+  | "selection"
+  | "yield";
 
-  if (/\b(one (important )?task|make (?:the |today |your )?day successful|day (?:count|successful)|fewer priorit|priorit(?:y|ies))\b/i.test(claim)) {
-    return "What's the one task that would make today successful? Comment it.";
-  }
-  if (/\bbusy\b/i.test(claim) && /\b(progress|meaningful|forward)\b/i.test(claim)) {
-    return "Are you busy, or making real progress? Comment the difference.";
-  }
-  if (/\bfill(?:ing|ed)? the day\b/i.test(claim) && /\btasks?\b/i.test(claim)) {
-    return "What's the one task you would keep if you cleared the rest? Comment it.";
-  }
-  if (/\bfill every hour\b/i.test(claim) || (/\btwenty things\b/i.test(claim) && /\bmattered\b/i.test(claim))) {
-    return "What would you drop if the day only counted one task? Comment it.";
+function themeHits(text: string): Array<{ theme: CtaTheme; index: number; weight: number }> {
+  const value = text;
+  const hits: Array<{ theme: CtaTheme; index: number; weight: number }> = [];
+  function add(theme: CtaTheme, pattern: RegExp, weight: number) {
+    const match = pattern.exec(value);
+    if (match && match.index >= 0) hits.push({ theme, index: match.index, weight });
   }
 
-  if (/\bcustomers?\b/i.test(claim) || /\b(feedback|support thread|customer research)\b/i.test(claim)) {
+  add("customer", /\btalk to customers\b/i, 4);
+  add("customer", /\bcustomer feedback\b/i, 4);
+  add("customer", /\bcustomer research\b/i, 4);
+  add("customer", /\bsupport thread\b/i, 3);
+  add("customer", /\bcustomers?\b/i, 3);
+  add("customer", /\bfeedback\b/i, 2);
+
+  add("priority", /\bone (important )?task\b/i, 4);
+  add("priority", /\bfewer priorit/i, 4);
+  add("priority", /\bpriorit(?:y|ies)\b/i, 3);
+  add("priority", /\bmake (?:the |today |your )?day successful\b/i, 3);
+  add("priority", /\bday (?:count|successful)\b/i, 2);
+  add("priority", /\bpacked calendar\b/i, 3);
+  add("priority", /\bfill every hour\b/i, 3);
+  add("priority", /\bfill(?:ing|ed)? the day\b/i, 2);
+  if (/\bbusy\b/i.test(value) && /\b(progress|meaningful|forward)\b/i.test(value)) {
+    add("priority", /\bbusy\b/i, 3);
+  }
+
+  add("rejection", /\breject/i, 4);
+  add("motivation", /\bmotivat/i, 4);
+  add("imagined", /\bimagined\b/i, 3);
+  add("imagined", /\bnobody asked\b/i, 3);
+
+  add("tension", /\bhunting for tension\b/i, 4);
+  add("tension", /\blook for tension\b/i, 4);
+  if (/\bclips\b/i.test(value) && /\btension\b/i.test(value)) add("tension", /\btension\b/i, 4);
+  add("tension", /\bstand on their own\b/i, 3);
+
+  add("pricing", /\bpackaging problem\b/i, 3);
+  add("pricing", /\bbetter question\b/i, 3);
+  add("pricing", /\buseless question\b/i, 2);
+  add("pricing", /\bused to sell\b/i, 3);
+  add("pricing", /\bsame brain, different box\b/i, 3);
+
+  add("almostcut", /\balmost cut\b/i, 4);
+  add("almostcut", /\b28-second\b/i, 3);
+  add("almostcut", /\bfour formats\b/i, 3);
+  add("almostcut", /\bsame 12 words\b/i, 3);
+
+  add("selection", /\bselection is the job\b/i, 4);
+  add("selection", /\bidentify the opportunities first\b/i, 4);
+  add("selection", /\batomize too early\b/i, 3);
+  add("selection", /\bcircle three moments\b/i, 3);
+  add("selection", /\bfrom nothing\b/i, 2);
+
+  add("yield", /\bfour assets per input\b/i, 3);
+  add("yield", /\b47 public posts\b/i, 3);
+  add("yield", /\bcontent operation\b/i, 2);
+
+  return hits;
+}
+
+function dominantTheme(text: string): CtaTheme | null {
+  const hits = themeHits(text);
+  if (hits.length === 0) return null;
+  const scores = new Map<CtaTheme, { weight: number; index: number }>();
+  for (const hit of hits) {
+    const current = scores.get(hit.theme);
+    if (!current) {
+      scores.set(hit.theme, { weight: hit.weight, index: hit.index });
+      continue;
+    }
+    current.weight += hit.weight;
+    current.index = Math.min(current.index, hit.index);
+  }
+  return [...scores.entries()].sort((left, right) => {
+    if (right[1].weight !== left[1].weight) return right[1].weight - left[1].weight;
+    return left[1].index - right[1].index;
+  })[0]?.[0] ?? null;
+}
+
+function ctaForTheme(theme: CtaTheme, claim: string): string {
+  if (theme === "customer") {
     return "What customer feedback changed what you were building? Comment it.";
   }
-
-  if (
-    /\b(?:look for tension|hunting for tension)\b/i.test(claim) ||
-    (/\bclips\b/i.test(claim) && /\btension\b/i.test(claim)) ||
-    /\bstand on their own\b/i.test(claim)
-  ) {
+  if (theme === "priority") {
+    if (/\bbusy\b/i.test(claim) && /\b(progress|meaningful|forward)\b/i.test(claim) && !/\bone (important )?task\b/i.test(claim) && !/\bpriorit/i.test(claim)) {
+      return "Are you busy, or making real progress? Comment the difference.";
+    }
+    return "What's the one task that would make today successful? Comment it.";
+  }
+  if (theme === "tension") {
     return "Comment a moment from your last video that could stand on its own.";
   }
-  const stoppedStarted = (sourceSentences(claim).length > 0 ? sourceSentences(claim) : [claim]).find(
-    (sentence) => /\bstopped\b.+\bstarted\b/i.test(sentence) && /\b(clip|tension|hunting)\b/i.test(sentence),
-  );
-  if (stoppedStarted) {
-    return "Comment a moment from your last video that had tension.";
+  if (theme === "rejection") {
+    return "What rejection taught you the most? Drop it below.";
   }
-  if (/\bpackaging problem\b/i.test(claim) && /\bconfidence\b/i.test(claim)) {
-    return "Are you treating price like a personality test? Tell me below.";
+  if (theme === "motivation") {
+    return "What's one habit you rely on when motivation disappears? Comment it.";
   }
-  if (/\bwhat transformation is so specific\b/i.test(claim) || /\bbetter question\b/i.test(claim)) {
-    return "What's a better question than 'Am I worth this?' Comment yours.";
+  if (theme === "imagined") {
+    return "Have you ever built something nobody asked for? Tell me in the comments.";
   }
-  if (/\buseless question\b/i.test(claim) && /\$[\d]/.test(claim)) {
-    return "What's a better question than 'Am I worth this?' Comment yours.";
-  }
-  if (/\baside you almost cut\b/i.test(claim) || /\balmost cut\b/i.test(claim)) {
-    return "Have you ever almost cut the line that performed? Tell me.";
-  }
-  if (/\b28-second\b/i.test(claim) || /\bfour formats\b/i.test(claim) || /\bsame 12 words\b/i.test(claim)) {
-    return "Save this if one line has ever become four pieces of content for you.";
-  }
-  if (/\bused to sell\b/i.test(claim) || (/\bvague\b/i.test(claim) && /\bsold\b/i.test(claim))) {
+  if (theme === "pricing") {
+    if (/\bwhat transformation is so specific\b/i.test(claim) || /\bbetter question\b/i.test(claim) || (/\buseless question\b/i.test(claim) && /\$[\d]/.test(claim))) {
+      return "What's a better question than 'Am I worth this?' Comment yours.";
+    }
     return "Have you ever sold something too vague to buy? Comment the offer.";
   }
-  if (/\bidentify the opportunities first\b/i.test(claim) || /\bselection is the job\b/i.test(claim)) {
+  if (theme === "almostcut") {
+    if (/\b28-second\b/i.test(claim) || /\bfour formats\b/i.test(claim) || /\bsame 12 words\b/i.test(claim)) {
+      return "Save this if one line has ever become four pieces of content for you.";
+    }
+    return "Have you ever almost cut the line that performed? Tell me.";
+  }
+  if (theme === "selection") {
+    if (/\bcircle three moments\b/i.test(claim) || /\bbehind on recasting\b/i.test(claim)) {
+      return "If a two-hour interview is sitting in your drive, start with three moments tonight.";
+    }
+    if (/\bfrom nothing\b/i.test(claim) || /\bvaluable moments that are already there\b/i.test(claim)) {
+      return "Save this if you've been trying to create more from nothing.";
+    }
     return "Do you pick the moments first, or ask for 30 posts? Comment your process.";
-  }
-  if (/\bcircle three moments\b/i.test(claim) || /\bbehind on recasting\b/i.test(claim)) {
-    return "If a two-hour interview is sitting in your drive, start with three moments tonight.";
-  }
-  if (/\bfour assets per input\b/i.test(claim) || /\b47 public posts\b/i.test(claim)) {
-    return "How many assets did your last long piece actually become?";
   }
   if (/\bgrew\b.+\bcontent operation\b/i.test(claim) || /\bwithout hiring a team\b/i.test(claim)) {
     return "Follow if you're building a content operation without hiring a team.";
   }
-  if (/\bsame brain, different box\b/i.test(claim)) {
-    return "Have you ever sold something too vague to buy? Comment the offer.";
-  }
-  if (/\bvaluable moments that are already there\b/i.test(claim) || /\bfrom nothing\b/i.test(claim)) {
-    return "Save this if you've been trying to create more from nothing.";
-  }
-  if (/\breject/i.test(claim)) {
-    return "What rejection taught you the most? Drop it below.";
-  }
-  if (/\bmotivat/i.test(claim)) {
-    return "What's one habit you rely on when motivation disappears? Comment it.";
-  }
-  if (/\b(imagined|nobody asked)\b/i.test(claim)) {
-    return "Have you ever built something nobody asked for? Tell me in the comments.";
-  }
+  return "How many assets did your last long piece actually become?";
+}
 
+function ctaFromText(text: string): string | null {
+  const cleaned = cleanQuote(text);
+  if (!cleaned) return null;
+  const theme = dominantTheme(cleaned);
+  if (!theme) return null;
+  return ctaForTheme(theme, cleaned);
+}
+
+function opportunityCta(
+  opportunity: Opportunity,
+  hook: string,
+  spokenScript: string,
+  idea: string,
+): string {
+  const sources = [
+    `${opportunity.topic || ""} ${opportunity.title || ""}`.trim(),
+    cleanQuote(opportunity.excerpt || ""),
+    hook,
+    spokenScript,
+    idea,
+  ].filter(Boolean);
+  for (const source of sources) {
+    const cta = ctaFromText(source);
+    if (cta) return cta;
+  }
   return "Have you dealt with this? Tell me in the comments.";
 }
 
@@ -826,7 +912,7 @@ function finalizeTikTok(
   }
 
   if (BANNED_CTA.test(cta) || !cta.trim() || looksLikeSourceSentence(cta, idea)) {
-    cta = viewerCta(idea, hook);
+    cta = opportunityCta(opportunity, hook, spokenScript, idea);
   }
 
   if (!onScreenText.trim() || onScreenLooksLikeSource(onScreenText, idea)) {
@@ -858,8 +944,13 @@ function onScreenLooksLikeSource(onScreenText: string, idea: string): boolean {
   return lines.some((line) => words(line).length >= 8 && looksLikeSourceSentence(line, idea));
 }
 
-function viewerActionCta(idea: string, hook: string): string {
-  let cta = viewerCta(idea, hook);
+function viewerActionCta(
+  opportunity: Opportunity,
+  hook: string,
+  spokenScript: string,
+  idea: string,
+): string {
+  let cta = opportunityCta(opportunity, hook, spokenScript, idea);
   if (looksLikeSourceSentence(cta, idea) || !/\b(comment|tell me|drop|below|what's|what is|have you)\b/i.test(cta)) {
     cta = "Have you dealt with this? Tell me in the comments.";
   }
@@ -876,7 +967,7 @@ export function generateTikTok(
   const hook = openingHook(opportunity, idea);
   const spokenScript = buildSpokenScript(hook, isolated.length > 0 ? isolated : sourceSentences(idea));
   const onScreenText = punchyCaptions(idea, hook);
-  const cta = viewerActionCta(idea, hook);
+  const cta = viewerActionCta(opportunity, hook, spokenScript, idea);
 
   return finalizeTikTok(opportunity, idea, {
     hook,
