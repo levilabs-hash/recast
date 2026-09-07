@@ -237,6 +237,13 @@ function tooSimilar(a: string, b: string): boolean {
   return lexicalOverlap(a, b) >= 0.34 || shareDistinctiveClaim(a, b);
 }
 
+function paragraphKey(sourceText: string, sentence: string): string {
+  const needle = sentence.slice(0, Math.min(48, sentence.length)).toLowerCase();
+  const paragraphs = sourceText.split(/\n\s*\n/).map((item) => item.replace(/\s+/g, " ").trim());
+  const match = paragraphs.find((paragraph) => paragraph.toLowerCase().includes(needle));
+  return (match ?? sentence).slice(0, 80).toLowerCase();
+}
+
 export function extractDistinctOpportunities(sourceText: string): Opportunity[] {
   const text = normalize(sourceText);
   const sentences = splitSentences(text);
@@ -256,6 +263,9 @@ export function extractDistinctOpportunities(sourceText: string): Opportunity[] 
     const excerpt = cleanQuote(item.sentence);
     if (excerpt.split(/\s+/).length < 6) continue;
     if (selected.some((existing) => tooSimilar(existing.excerpt, excerpt))) continue;
+    if (selected.some((existing) => paragraphKey(text, existing.excerpt) === paragraphKey(text, excerpt))) {
+      continue;
+    }
     if (selected.length >= (longSource ? 3 : 1) && item.score < 1.5) continue;
     const topic = titleFromSentence(excerpt);
     selected.push({
@@ -413,6 +423,9 @@ export function refineDistinctOpportunities(
     const topic = item.topic || item.title || titleFromSentence(excerpt);
     if (!excerpt || excerpt.split(/\s+/).length < 6) continue;
     if (merged.some((existing) => tooSimilar(existing.excerpt, excerpt))) continue;
+    if (merged.some((existing) => paragraphKey(sourceText, existing.excerpt) === paragraphKey(sourceText, excerpt))) {
+      continue;
+    }
     merged.push({
       id: `topic-${merged.length + 1}`,
       kind: "topic",

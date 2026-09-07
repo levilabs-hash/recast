@@ -8,7 +8,8 @@ import {
   normalizeAnalyzeOpportunities,
   outputsToPackages,
 } from "./opportunity-schema";
-import { generateForPlatform, normalizePlatforms, type PlatformId } from "./platforms";
+import { normalizePlatforms, type PlatformId } from "./platforms";
+import { generateTikTok, type TikTokUsed } from "./platforms/tiktok";
 import type { AnalysisResult, GeneratedPiece, GenerationResult, Opportunity } from "./types";
 
 const MIN_CHARS = 80;
@@ -72,7 +73,12 @@ function applyTikTokGenerator(
     };
   }
 
-  const byId = new Map(opportunities.map((item) => [item.id, item]));
+  const used: TikTokUsed = { hooks: [], scripts: [], ctas: [], captions: [], paragraphs: [] };
+  const tiktokFields = new Map<string, Record<string, string>>();
+  for (const opportunity of opportunities) {
+    tiktokFields.set(opportunity.id, generateTikTok(sourceText, opportunity, used));
+  }
+
   const outputs: GeneratedPiece[] = [];
   const seenTikTok = new Set<string>();
 
@@ -81,32 +87,20 @@ function applyTikTokGenerator(
       outputs.push(output);
       continue;
     }
-    const opportunity = byId.get(output.opportunityId);
-    if (!opportunity) {
+    const opportunity = opportunities.find((item) => item.id === output.opportunityId);
+    const fields = tiktokFields.get(output.opportunityId);
+    if (!opportunity || !fields) {
       outputs.push(output);
       continue;
     }
-    const fields = generateForPlatform("tiktok", sourceText, opportunity);
-    console.info("[recast:tiktok]", {
-      opportunityId: opportunity.id,
-      opportunityTitle: opportunity.title,
-      hook: fields.hook,
-      cta: fields.cta,
-      incomingHook: output.fields.hook,
-    });
     outputs.push({ ...output, fields });
     seenTikTok.add(opportunity.id);
   }
 
   for (const opportunity of opportunities) {
     if (seenTikTok.has(opportunity.id)) continue;
-    const fields = generateForPlatform("tiktok", sourceText, opportunity);
-    console.info("[recast:tiktok:missing]", {
-      opportunityId: opportunity.id,
-      opportunityTitle: opportunity.title,
-      hook: fields.hook,
-      cta: fields.cta,
-    });
+    const fields = tiktokFields.get(opportunity.id);
+    if (!fields) continue;
     outputs.push({
       opportunityId: opportunity.id,
       opportunityTitle: opportunity.title,

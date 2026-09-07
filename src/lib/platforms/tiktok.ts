@@ -123,11 +123,59 @@ function firstQuestion(claim: string): string | null {
   return ranked[0] ?? null;
 }
 
-function ideaFromSource(sourceText: string, excerpt: string): string {
-  const claim = cleanQuote(excerpt);
-  const parts = completeFromSource(sourceText, excerpt);
-  if (!parts.some((part) => sameLine(part, claim)) && claim) parts.unshift(claim);
-  return parts.join(" ");
+function ideaOverlap(a: string, b: string): number {
+  const left = new Set(textKey(a).split(" ").filter((word) => word.length > 3));
+  const right = textKey(b).split(" ").filter((word) => word.length > 3);
+  if (left.size === 0 || right.length === 0) return 0;
+  const shared = right.filter((word) => left.has(word)).length;
+  return shared / Math.max(left.size, new Set(right).size);
+}
+
+function sourceParagraphs(sourceText: string): string[] {
+  return sourceText
+    .replace(/\r\n/g, "\n")
+    .replace(/[“”]/g, '"')
+    .split(/\n\s*\n/)
+    .map((paragraph) =>
+      paragraph
+        .replace(/^[A-Za-z]+:\s*/gm, "")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .filter((paragraph) => paragraph.length >= 40);
+}
+
+function isolateIdea(sourceText: string, opportunity: Opportunity): string[] {
+  const seed = cleanQuote(opportunity.excerpt || opportunity.topic || opportunity.title);
+  if (!seed) return [];
+
+  const paragraphs = sourceParagraphs(sourceText);
+  let best = "";
+  let bestScore = 0;
+  for (const paragraph of paragraphs) {
+    const contained = paragraph.toLowerCase().includes(seed.slice(0, Math.min(48, seed.length)).toLowerCase());
+    const score = contained ? 1 : ideaOverlap(paragraph, seed);
+    if (score > bestScore) {
+      bestScore = score;
+      best = paragraph;
+    }
+  }
+
+  if (!best || bestScore < 0.2) {
+    return sourceSentences(seed).length > 0 ? sourceSentences(seed) : [seed];
+  }
+
+  const sentences = sourceSentences(best);
+  return sentences.length > 0 ? sentences : [best];
+}
+
+function ideaFromSource(sourceText: string, opportunity: Opportunity): string {
+  const isolated = isolateIdea(sourceText, opportunity);
+  const seed = cleanQuote(opportunity.excerpt || "");
+  if (seed && !isolated.some((part) => sameLine(part, seed))) {
+    isolated.unshift(seed);
+  }
+  return isolated.join(" ");
 }
 
 function isCompletePhrase(text: string): boolean {
@@ -177,6 +225,24 @@ function punchyFromIdea(claim: string): string | null {
   }
   if (/\bcan become multiple (?:posts|pieces)\b/i.test(claim)) {
     return "One recording can become multiple posts.";
+  }
+  if (/\bmotivation is a terrible\b/i.test(claim) || (/\bmotivat/i.test(claim) && /\boperating system\b/i.test(claim))) {
+    return "Motivation is a terrible operating system.";
+  }
+  if (/\brejection was information\b/i.test(claim) || (/\breject/i.test(claim) && /\binformation\b/i.test(claim))) {
+    return "Rejection was information, not a verdict.";
+  }
+  if (/\breject/i.test(claim) && /\b(taught|lesson|learn)\b/i.test(claim)) {
+    return "The rejection was the lesson.";
+  }
+  if (/\bmotivat/i.test(claim) && /\b(disappear|habit|discipline)\b/i.test(claim)) {
+    return "Motivation disappears. Habits stay.";
+  }
+  if (/\bimagined\b/i.test(claim) && /\bproblem/i.test(claim)) {
+    return "I was solving problems I imagined.";
+  }
+  if (/\bnobody asked\b/i.test(claim)) {
+    return "I built something nobody asked for.";
   }
 
   return null;
@@ -438,53 +504,28 @@ function repeatsHook(text: string, hook: string): boolean {
   return sameLine(text, hook);
 }
 
-function buildSpokenScript(hook: string, beats: string[], idea: string, sourceText: string): string {
-  const middle: string[] = [];
+function buildSpokenScript(hook: string, ideaSentences: string[]): string {
+  const blocks: string[] = [];
+  const opening = endSentence(hook);
+  blocks.push(opening);
 
   function take(text: string | null | undefined) {
     if (!text || META_SPEECH.test(text) || HOST_OPENER.test(text) || INTERVIEWER_LINE.test(text)) {
       return;
     }
     if (repeatsHook(text, hook)) return;
-    if (middle.some((existing) => sameLine(existing, text))) return;
-    if (words(text).length < 5) return;
-    middle.push(endSentence(text));
+    const next = endSentence(text);
+    if (blocks.some((existing) => sameLine(existing, next))) return;
+    if (words(next).length < 5) return;
+    blocks.push(next);
   }
 
-  for (const sentence of passageAround(sourceText, idea)) take(sentence);
-  for (const beat of beats) {
-    if (middle.length >= 3) break;
-    take(beat);
+  for (const sentence of ideaSentences) {
+    if (blocks.length >= 5) break;
+    take(sentence);
   }
 
-  if (middle.length < 2) {
-    for (const sentence of passageAround(sourceText, idea)) {
-      if (middle.length >= 3) break;
-      take(sentence);
-    }
-  }
-
-  const trimmed = middle.slice(0, 5);
-  const opening = endSentence(hook);
-  const first = trimmed[0];
-  const rest = trimmed.slice(1);
-  const script = first ? [`${opening} ${first}`, ...rest].join("\n\n") : opening;
-
-  const count = words(script).length;
-  if (count >= 55 && count <= 110) return script;
-  if (count < 55) {
-    const extra = passageAround(sourceText, idea).filter(
-      (sentence) => !repeatsHook(sentence, hook) && !trimmed.some((item) => sameLine(item, sentence)),
-    );
-    const filled = [...trimmed];
-    for (const sentence of extra) {
-      if (words([opening, ...filled].join(" ")).length >= 70) break;
-      filled.push(endSentence(sentence));
-    }
-    const next = filled[0];
-    return next ? [`${opening} ${next}`, ...filled.slice(1)].join("\n\n") : opening;
-  }
-  return script;
+  return blocks.join("\n\n");
 }
 
 const BANNED_CTA =
@@ -552,19 +593,20 @@ function viewerCta(idea: string, hook: string): string {
   if (/\bvaluable moments that are already there\b/i.test(claim) || /\bfrom nothing\b/i.test(claim)) {
     return "Save this if you've been trying to create more from nothing.";
   }
+  if (/\breject/i.test(claim)) {
+    return "What rejection taught you the most? Drop it below.";
+  }
+  if (/\bmotivat/i.test(claim)) {
+    return "What's one habit you rely on when motivation disappears? Comment it.";
+  }
+  if (/\b(imagined|nobody asked)\b/i.test(claim)) {
+    return "Have you ever built something nobody asked for? Tell me in the comments.";
+  }
+  if (/\b(customer feedback|users told|customers said|feedback)\b/i.test(claim)) {
+    return "What customer feedback changed what you were building? Comment it.";
+  }
 
-  const core = hook.replace(/[.?!]+$/g, "").trim();
-  if (/\?$/.test(hook) && core.length >= 8) {
-    return `What's your take? ${core}? Comment below.`;
-  }
-  if (core.length >= 8 && core.length <= 72) {
-    return `If this is you, comment how you'd apply this: ${core}.`;
-  }
-  const choose = claim.match(/\b(choose|choosing|pick|picking) ([^.!?]{8,48})/i);
-  if (choose) {
-    return `Are you ready to ${choose[1].toLowerCase()} ${choose[2].trim()}? Tell me below.`;
-  }
-  return `What would you change first after hearing this? Comment it.`;
+  return "Have you dealt with this? Tell me in the comments.";
 }
 
 function punchyCaptions(idea: string, hook: string): string {
@@ -576,10 +618,10 @@ function punchyCaptions(idea: string, hook: string): string {
     const trimmed = String(raw).replace(/\s+/g, " ").trim();
     const cleaned = (trimmed.charAt(0).toUpperCase() + trimmed.slice(1)).replace(/[.,]+$/g, "").trim();
     const count = words(cleaned).length;
-    if (count < 2 || count > 10) return;
+    if (count < 2 || count > 8) return;
     if (!isCompletePhrase(cleaned) || /\bis:?$/i.test(cleaned)) return;
     if (META_SPEECH.test(cleaned) || LABEL_TITLES.test(cleaned)) return;
-    if (sameLine(cleaned, claim) && count >= 10) return;
+    if (sameLine(cleaned, claim) && count >= 7) return;
     const key = textKey(cleaned);
     if (!key || seen.has(key)) return;
     if (captions.some((existing) => {
@@ -622,6 +664,11 @@ function punchyCaptions(idea: string, hook: string): string {
     add("Start hunting for tension");
     add("Moments that can stand alone");
   }
+  if (/\breject/i.test(claim)) add("Rejection was information");
+  if (/\bmotivat/i.test(claim)) add("Motivation disappears");
+  if (/\bimagined\b/i.test(claim) && /\bproblem/i.test(claim)) add("Problems I imagined");
+  if (/\bnobody asked\b/i.test(claim)) add("Nobody asked for them");
+  if (/\bcustomer feedback\b/i.test(claim)) add("Listen to the brief");
 
   const stopped = claim.match(/\bstopped (.+?) and started (.+?)(?:\.|$)/i);
   if (stopped) {
@@ -674,6 +721,10 @@ function punchyCaptions(idea: string, hook: string): string {
   if (captions.length === 0 && isCompletePhrase(hook)) {
     add(hook);
   }
+  if (captions.length === 0) {
+    const shortHook = words(hook).slice(0, 6).join(" ");
+    if (shortHook) captions.push(sentenceCase(shortHook));
+  }
 
   return captions.slice(0, 3).join("\n");
 }
@@ -700,13 +751,7 @@ function finalizeTikTok(
     hook = punchyFromIdea(idea) || hook;
   }
 
-  const firstBlock = spokenScript.split(/\n\n/)[0] ?? "";
-  if (repeatsHook(firstBlock, hook) && firstBlock.trim() === endSentence(hook)) {
-    const rest = spokenScript.split(/\n\n/).slice(1).join("\n\n");
-    spokenScript = rest ? `${endSentence(hook)} ${rest}` : spokenScript;
-  }
-
-  if (BANNED_CTA.test(cta) || !cta.trim()) {
+  if (BANNED_CTA.test(cta) || !cta.trim() || looksLikeSourceSentence(cta, idea)) {
     cta = viewerCta(idea, hook);
   }
 
@@ -717,20 +762,113 @@ function finalizeTikTok(
   return { hook, spokenScript, onScreenText, cta };
 }
 
+function looksLikeSourceSentence(cta: string, idea: string): boolean {
+  const ctaKey = textKey(cta);
+  if (!ctaKey) return false;
+  for (const sentence of sourceSentences(idea).concat(idea.split(/(?<=[.!?])\s+/))) {
+    const key = textKey(sentence);
+    if (!key) continue;
+    if (key === ctaKey || (key.length >= 24 && (key.includes(ctaKey) || ctaKey.includes(key)))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function viewerActionCta(idea: string, hook: string): string {
+  let cta = viewerCta(idea, hook);
+  if (looksLikeSourceSentence(cta, idea) || !/\b(comment|tell me|drop|below|what's|what is|have you)\b/i.test(cta)) {
+    cta = "Have you dealt with this? Tell me in the comments.";
+  }
+  return cta;
+}
+
+export type TikTokUsed = {
+  hooks: string[];
+  scripts: string[];
+  ctas: string[];
+  captions: string[];
+  paragraphs: string[];
+};
+
+function usedKey(text: string): string {
+  return textKey(text);
+}
+
+function isReused(used: TikTokUsed | undefined, field: keyof TikTokUsed, text: string): boolean {
+  if (!used) return false;
+  const key = usedKey(text);
+  if (!key) return false;
+  return used[field].some((existing) => existing === key || existing.includes(key) || key.includes(existing));
+}
+
+function remember(used: TikTokUsed | undefined, field: keyof TikTokUsed, text: string) {
+  if (!used) return;
+  const key = usedKey(text);
+  if (key) used[field].push(key);
+}
+
+const CTA_VARIANTS = [
+  "Have you dealt with this? Tell me in the comments.",
+  "What's your version of this? Drop it below.",
+  "Has this happened to you? Comment it.",
+  "Would you do this differently? Tell me below.",
+];
+
 export function generateTikTok(
   sourceText: string,
   opportunity: Opportunity,
+  used?: TikTokUsed,
 ): Record<string, string> {
-  const idea = ideaFromSource(sourceText, sourceClaim(opportunity));
-  const hook = openingHook(opportunity, idea);
-  const beats = spokenBeats(hook, idea, sourceText);
-  const cta = viewerCta(idea, hook);
-  const spokenScript = buildSpokenScript(hook, beats, idea, sourceText);
+  const isolatedAll = isolateIdea(sourceText, opportunity);
+  const paragraphKey = usedKey(isolatedAll.join(" "));
+  const narrowed =
+    paragraphKey && isReused(used, "paragraphs", isolatedAll.join(" "))
+      ? isolatedAll.filter((sentence) => ideaOverlap(sentence, opportunity.excerpt || opportunity.title) >= 0.32)
+      : isolatedAll;
+  const isolated = narrowed.length > 0 ? narrowed : isolatedAll;
+  if (isolatedAll.length > 0) remember(used, "paragraphs", isolatedAll.join(" "));
+  const idea = isolated.join(" ") || ideaFromSource(sourceText, opportunity);
+  let hook = openingHook(opportunity, idea);
+  if (isReused(used, "hooks", hook)) {
+    const fallback = usableClauses(idea).find(
+      (clause) =>
+        words(clause).length >= 4 &&
+        words(clause).length <= 12 &&
+        !isReused(used, "hooks", clause) &&
+        !sameLine(clause, opportunity.title),
+    );
+    if (fallback) hook = sentenceCase(fallback);
+  }
 
-  return finalizeTikTok(opportunity, idea, {
+  let spokenScript = buildSpokenScript(hook, isolated.length > 0 ? isolated : sourceSentences(idea));
+  if (isReused(used, "scripts", spokenScript)) {
+    spokenScript = buildSpokenScript(hook, sourceSentences(idea).slice(0, 3));
+  }
+
+  let onScreenText = punchyCaptions(idea, hook);
+  if (isReused(used, "captions", onScreenText)) {
+    const alt = punchyCaptions(isolated.join(" "), hook);
+    if (!isReused(used, "captions", alt)) onScreenText = alt;
+  }
+
+  let cta = viewerActionCta(idea, hook);
+  if (isReused(used, "ctas", cta) || looksLikeSourceSentence(cta, idea)) {
+    cta =
+      CTA_VARIANTS.find((item) => !isReused(used, "ctas", item)) ??
+      "Have you dealt with this? Tell me in the comments.";
+  }
+
+  const fields = finalizeTikTok(opportunity, idea, {
     hook,
     spokenScript,
-    onScreenText: punchyCaptions(idea, hook),
+    onScreenText,
     cta,
   });
+
+  remember(used, "hooks", fields.hook);
+  remember(used, "scripts", fields.spokenScript);
+  remember(used, "captions", fields.onScreenText);
+  remember(used, "ctas", fields.cta);
+  return fields;
 }
